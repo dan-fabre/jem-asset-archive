@@ -64,41 +64,43 @@ function App() {
     }
   };
 
-  const getProfile = async (userId) => {
-    try {
-      console.log('Getting profile for user:', userId);
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', userId)
-        .single();
+const getProfile = async (userId) => {
+  try {
+    console.log('Getting profile for user:', userId);
+    console.log('About to query profiles table...');
+    
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('id', userId)
+      .single();
 
-      console.log('Profile result:', { data, error });
+    console.log('Raw query result:', { data, error });
+    console.log('Data details:', data);
+    console.log('Error details:', error);
 
-      if (error) throw error;
+    if (error) {
+      console.error('Profile query error:', error);
+      throw error;
+    }
 
-      if (data && data.status === 'active') {
-        console.log('Active user found, setting up dashboard');
-        setCurrentUser(data);
-        setCurrentView('dashboard');
-        loadFolders();
-        loadAssets();
-        if (data.role === 'admin') {
-          loadUsers();
-        }
-      } else if (data && data.status === 'pending') {
-        console.log('Pending user found');
-        setCurrentView('pending');
-      } else {
-        console.log('No profile found or inactive');
-        setCurrentView('login');
-      }
-    } catch (error) {
-      console.error('Error loading profile:', error);
-      setError('Error loading profile: ' + error.message);
+    if (data && data.status === 'active') {
+      console.log('Active user found, setting up dashboard');
+      setCurrentUser(data);
+      setCurrentView('dashboard');
+    } else if (data && data.status === 'pending') {
+      console.log('Pending user found');
+      setCurrentView('pending');
+    } else {
+      console.log('No profile found or inactive, data was:', data);
       setCurrentView('login');
     }
-  };
+  } catch (error) {
+    console.error('Error in getProfile:', error);
+    setError('Error loading profile: ' + error.message);
+    setCurrentView('login');
+  }
+};
 
   // Just show a simple test for now
   if (loading) {

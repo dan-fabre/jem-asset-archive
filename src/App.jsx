@@ -9,6 +9,7 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 
 function App() {
   const [currentUser, setCurrentUser] = useState(null);
+  const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
   const [currentView, setCurrentView] = useState('login');
   const [folders, setFolders] = useState([]);
@@ -22,148 +23,140 @@ function App() {
   const [showMobileMenu, setShowMobileMenu] = useState(false);
   const [error, setError] = useState('');
 
-  // Check if user is logged in on mount
+  // Fixed authentication useEffect - only one needed
   useEffect(() => {
-    getSession();
+    let isMounted = true;
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (event, session) => {
-        if (session?.user) {
-          await getProfile(session.user.id);
-        } else {
-          setCurrentUser(null);
+    const getInitialSession = async () => {
+      try {
+        console.log('Getting initial session...');
+        const { data: { session }, error } = await supabase.auth.getSession();
+        
+        if (error) {
+          console.error('Error getting session:', error);
+          if (isMounted) {
+            setCurrentView('login');
+            setLoading(false);
+          }
+          return;
+        }
+
+        if (session?.user && isMounted) {
+          console.log('Session found, getting profile...');
+          try {
+            await getProfile(session.user.id);
+          } catch (profileError) {
+            console.error('Error loading profile:', profileError);
+            // Still set the user even if profile fails
+            setCurrentUser(session.user);
+            setCurrentView('dashboard');
+          }
+        } else if (isMounted) {
           setCurrentView('login');
         }
+        
+        if (isMounted) {
+          setLoading(false);
+        }
+      } catch (error) {
+        console.error('Session check failed:', error);
+        if (isMounted) {
+          setCurrentView('login');
+          setLoading(false);
+        }
+      }
+    };
+
+    // Set up auth state listener
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      async (event, session) => {
+        console.log('Auth state changed:', event, session?.user?.email);
+        
+        if (!isMounted) return;
+
+        if (session?.user) {
+          try {
+            await getProfile(session.user.id);
+          } catch (error) {
+            console.error('Error loading profile in auth change:', error);
+            setCurrentUser(session.user);
+            setCurrentView('dashboard');
+          }
+        } else {
+          setCurrentUser(null);
+          setProfile(null);
+          setCurrentView('login');
+          setFolders([]);
+          setAssets([]);
+          setUsers([]);
+          setPendingUsers([]);
+        }
+        
         setLoading(false);
       }
     );
 
-    return () => subscription.unsubscribe();
+    // Get initial session
+    getInitialSession();
+
+    // Cleanup function
+    return () => {
+      isMounted = false;
+      subscription.unsubscribe();
+    };
   }, []);
 
-// Replace your useEffect hook around line 41 with this:
-useEffect(() => {
-  const subscription = supabase.auth.onAuthStateChange(async (event, session) => {
-    console.log('Auth state changed:', event, session); // Add logging
-    
-    if (session?.user) {
-      try {
-        setLoading(true);
-        await getProfile(session.user.id);
-        setCurrentUser(session.user);
-        setCurrentView('media');
-      } catch (error) {
-        console.error('Error loading profile:', error);
-        // Don't break the flow - set user anyway
-        setCurrentUser(session.user);
-        setCurrentView('media');
+  // Load data when user changes
+  useEffect(() => {
+    if (currentUser && profile) {
+      loadFolders();
+      loadAssets();
+      if (profile.role === 'admin') {
+        loadUsers();
       }
-    } else {
-      setCurrentUser(null);
-      setCurrentView('login');
     }
-    setLoading(false);
-  });
-
-  // Initial session check
-  const getInitialSession = async () => {
-    try {
-      setLoading(true);
-      const { data: { session }, error } = await supabase.auth.getSession();
-      
-      if (error) {
-        console.error('Error getting session:', error);
-        setCurrentView('login');
-        return;
-      }
-
-      if (session?.user) {
-        try {
-          await getProfile(session.user.id);
-          setCurrentUser(session.user);
-          setCurrentView('media');
-        } catch (profileError) {
-          console.error('Error loading profile:', profileError);
-          // Still set the user even if profile fails
-          setCurrentUser(session.user);
-          setCurrentView('media');
-        }
-      } else {
-        setCurrentView('login');
-      }
-    } catch (error) {
-      console.error('Session check failed:', error);
-      setCurrentView('login');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  getInitialSession();
-
-  return () => subscription.unsubscribe();
-}, []);
-
-// Also update your getProfile function around line 57:
-const getProfile = async (userId) => {
-  try {
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', userId)
-      .single();
-
-    if (error) {
-      console.error('Profile fetch error:', error);
-      throw error;
-    }
-
-    if (data) {
-      setProfile(data);
-      console.log('Profile loaded:', data); // Add logging
-    }
-  } catch (error) {
-    console.error('Error in getProfile:', error);
-    throw error; // Re-throw so calling code can handle it
-  }
-};
-
-// Make sure you're not accessing .length on potentially undefined arrays
-// Check anywhere in your code where you use .length - add safety checks like:
-// Instead of: someArray.length
-// Use: someArray?.length || 0
-// Or: (someArray || []).length
+  }, [currentUser, profile]);
 
   const getProfile = async (userId) => {
     try {
+      console.log('Getting profile for user:', userId);
       const { data, error } = await supabase
         .from('profiles')
         .select('*')
         .eq('id', userId)
         .single();
 
-      if (error) throw error;
+      if (error) {
+        console.error('Profile fetch error:', error);
+        throw error;
+      }
 
-   if (data && data.status === 'active') {
-  setCurrentUser(data);
-  setCurrentView('dashboard');
-  // loadFolders();
-  // loadAssets();
-  // if (data.role === 'admin') {
-  //   loadUsers();
-  // }
-}
-      } else if (data && data.status === 'pending') {
-        setCurrentView('pending');
+      console.log('Profile data:', data);
+
+      if (data) {
+        setProfile(data);
+        
+        if (data.status === 'active') {
+          setCurrentUser({ id: userId, ...data });
+          setCurrentView('dashboard');
+        } else if (data.status === 'pending') {
+          setCurrentView('pending');
+        } else {
+          setCurrentView('login');
+        }
+      } else {
+        // No profile found, user might need to complete registration
+        setCurrentView('login');
       }
     } catch (error) {
-      console.error('Error loading profile:', error);
-      setError('Error loading profile');
+      console.error('Error in getProfile:', error);
+      throw error;
     }
   };
 
   const loadFolders = async () => {
     try {
+      console.log('Loading folders...');
       const { data, error } = await supabase
         .from('folders')
         .select('*')
@@ -171,13 +164,16 @@ const getProfile = async (userId) => {
 
       if (error) throw error;
       setFolders(data || []);
+      console.log('Loaded folders:', data?.length || 0);
     } catch (error) {
       console.error('Error loading folders:', error);
+      setFolders([]);
     }
   };
 
   const loadAssets = async () => {
     try {
+      console.log('Loading assets...');
       const { data, error } = await supabase
         .from('assets')
         .select(`
@@ -189,13 +185,16 @@ const getProfile = async (userId) => {
 
       if (error) throw error;
       setAssets(data || []);
+      console.log('Loaded assets:', data?.length || 0);
     } catch (error) {
       console.error('Error loading assets:', error);
+      setAssets([]);
     }
   };
 
   const loadUsers = async () => {
     try {
+      console.log('Loading users...');
       const { data, error } = await supabase
         .from('profiles')
         .select('*')
@@ -203,13 +202,16 @@ const getProfile = async (userId) => {
 
       if (error) throw error;
       
-      const activeUsers = data?.filter(user => user.status === 'active') || [];
-      const pendingUsers = data?.filter(user => user.status === 'pending') || [];
+      const activeUsers = (data || []).filter(user => user.status === 'active');
+      const pending = (data || []).filter(user => user.status === 'pending');
       
       setUsers(activeUsers);
-      setPendingUsers(pendingUsers);
+      setPendingUsers(pending);
+      console.log('Loaded users:', activeUsers.length, 'pending:', pending.length);
     } catch (error) {
       console.error('Error loading users:', error);
+      setUsers([]);
+      setPendingUsers([]);
     }
   };
 
@@ -217,6 +219,8 @@ const getProfile = async (userId) => {
   const handleSignUp = async (email, password, name) => {
     try {
       setError('');
+      console.log('Signing up user:', email);
+      
       const { data, error } = await supabase.auth.signUp({
         email,
         password,
@@ -230,7 +234,8 @@ const getProfile = async (userId) => {
       if (error) throw error;
 
       if (data.user) {
-        setCurrentView('pending');
+        console.log('User signed up successfully');
+        // The auth state change will handle the rest
       }
     } catch (error) {
       console.error('Error signing up:', error);
@@ -241,12 +246,16 @@ const getProfile = async (userId) => {
   const handleSignIn = async (email, password) => {
     try {
       setError('');
+      console.log('Signing in user:', email);
+      
       const { data, error } = await supabase.auth.signInWithPassword({
         email,
         password
       });
 
       if (error) throw error;
+      console.log('User signed in successfully');
+      // The auth state change will handle the rest
     } catch (error) {
       console.error('Error signing in:', error);
       setError(error.message);
@@ -255,15 +264,23 @@ const getProfile = async (userId) => {
 
   const handleSignOut = async () => {
     try {
+      console.log('Signing out user');
       const { error } = await supabase.auth.signOut();
       if (error) throw error;
       
+      // Clear all state
       setCurrentUser(null);
+      setProfile(null);
       setCurrentView('login');
       setFolders([]);
       setAssets([]);
       setUsers([]);
       setPendingUsers([]);
+      setSelectedFolder(null);
+      setNavigationStack([]);
+      setSearchTerm('');
+      setShowUpload(false);
+      setShowMobileMenu(false);
     } catch (error) {
       console.error('Error signing out:', error);
     }
@@ -271,6 +288,7 @@ const getProfile = async (userId) => {
 
   const approveUser = async (userId) => {
     try {
+      console.log('Approving user:', userId);
       const { error } = await supabase
         .from('profiles')
         .update({ status: 'active' })
@@ -279,6 +297,7 @@ const getProfile = async (userId) => {
       if (error) throw error;
       
       await loadUsers();
+      console.log('User approved successfully');
     } catch (error) {
       console.error('Error approving user:', error);
     }
@@ -310,6 +329,7 @@ const getProfile = async (userId) => {
   // Asset and folder functions
   const createFolder = async (name, type, tags, parentId = null) => {
     try {
+      console.log('Creating folder:', name);
       const { data, error } = await supabase
         .from('folders')
         .insert([{
@@ -326,6 +346,7 @@ const getProfile = async (userId) => {
       if (error) throw error;
       
       await loadFolders();
+      console.log('Folder created successfully');
       return data;
     } catch (error) {
       console.error('Error creating folder:', error);
@@ -335,9 +356,10 @@ const getProfile = async (userId) => {
 
   const uploadFile = async (file, folderId, tags) => {
     try {
+      console.log('Uploading file:', file.name, 'to folder:', folderId);
       const fileExt = file.name.split('.').pop();
       const fileName = `${Date.now()}-${Math.random().toString(36).substring(2)}.${fileExt}`;
-      const filePath = `${folderId}/${fileName}`;
+      const filePath = `${folderId || 'general'}/${fileName}`;
 
       // Upload file to storage
       const { data: uploadData, error: uploadError } = await supabase.storage
@@ -364,6 +386,7 @@ const getProfile = async (userId) => {
       if (error) throw error;
       
       await loadAssets();
+      console.log('File uploaded successfully');
       return data;
     } catch (error) {
       console.error('Error uploading file:', error);
@@ -373,6 +396,7 @@ const getProfile = async (userId) => {
 
   const downloadFile = async (filePath, fileName) => {
     try {
+      console.log('Downloading file:', filePath);
       const { data, error } = await supabase.storage
         .from('assets')
         .download(filePath);
@@ -387,22 +411,23 @@ const getProfile = async (userId) => {
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
+      console.log('File downloaded successfully');
     } catch (error) {
       console.error('Error downloading file:', error);
     }
   };
 
-  // Filter functions
-  const filteredAssets = assets.filter(asset => {
-    const matchesSearch = asset.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         asset.tags?.some(tag => tag.toLowerCase().includes(searchTerm.toLowerCase()));
+  // Filter functions with safety checks
+  const filteredAssets = (assets || []).filter(asset => {
+    const matchesSearch = asset.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                         (asset.tags || []).some(tag => tag.toLowerCase().includes(searchTerm.toLowerCase()));
     const matchesFolder = selectedFolder ? asset.folder_id === selectedFolder.id : true;
     return matchesSearch && matchesFolder;
   });
 
-  const filteredFolders = folders.filter(folder => {
-    const matchesSearch = folder.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         folder.tags?.some(tag => tag.toLowerCase().includes(searchTerm.toLowerCase()));
+  const filteredFolders = (folders || []).filter(folder => {
+    const matchesSearch = folder.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                         (folder.tags || []).some(tag => tag.toLowerCase().includes(searchTerm.toLowerCase()));
     return matchesSearch && !folder.parent_id;
   });
 
@@ -586,7 +611,7 @@ const getProfile = async (userId) => {
               <span className="text-sm text-gray-700 hidden sm:block">{currentUser?.name}</span>
             </div>
 
-            {currentUser?.role === 'admin' && (
+            {profile?.role === 'admin' && (
               <button
                 onClick={() => navigateTo('admin')}
                 className="p-2 text-gray-400 hover:text-gray-600 transition-colors"
@@ -641,7 +666,7 @@ const getProfile = async (userId) => {
       <div className="bg-white rounded-lg border border-gray-200 p-6">
         <h2 className="text-lg font-semibold text-gray-900 mb-4">Recent Activity</h2>
         <div className="space-y-3">
-          {assets.slice(0, 3).map(asset => (
+          {(assets || []).slice(0, 3).map(asset => (
             <div key={asset.id} className="flex items-center space-x-3 p-3 hover:bg-gray-50 rounded-lg transition-colors">
               <div className="p-2 bg-pink-100 rounded-lg">
                 {asset.mime_type?.includes('video') ? 
@@ -652,7 +677,7 @@ const getProfile = async (userId) => {
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium text-gray-900 truncate">{asset.name}</p>
                 <p className="text-xs text-gray-500">
-                  Uploaded by {asset.profiles?.name} • {new Date(asset.created_at).toLocaleDateString()}
+                  Uploaded by {asset.profiles?.name || 'Unknown'} • {new Date(asset.created_at).toLocaleDateString()}
                 </p>
               </div>
               <div className="flex items-center space-x-2">
@@ -668,7 +693,7 @@ const getProfile = async (userId) => {
               </div>
             </div>
           ))}
-          {assets.length === 0 && (
+          {(assets || []).length === 0 && (
             <p className="text-gray-500 text-center py-4">No assets uploaded yet</p>
           )}
         </div>
@@ -677,7 +702,7 @@ const getProfile = async (userId) => {
       {/* Folders Grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         {filteredFolders.map(folder => {
-          const folderAssets = assets.filter(asset => asset.folder_id === folder.id);
+          const folderAssets = (assets || []).filter(asset => asset.folder_id === folder.id);
           return (
             <div
               key={folder.id}
@@ -697,14 +722,14 @@ const getProfile = async (userId) => {
               <p className="text-sm text-gray-600 mb-3">{folderAssets.length} assets</p>
               
               <div className="flex flex-wrap gap-1">
-                {folder.tags?.slice(0, 3).map(tag => (
+                {(folder.tags || []).slice(0, 3).map(tag => (
                   <span key={tag} className="px-2 py-1 bg-gray-100 text-xs text-gray-600 rounded-full">
                     {tag}
                   </span>
                 ))}
-                {folder.tags?.length > 3 && (
+                {(folder.tags || []).length > 3 && (
                   <span className="px-2 py-1 bg-gray-100 text-xs text-gray-600 rounded-full">
-                    +{folder.tags.length - 3}
+                    +{(folder.tags || []).length - 3}
                   </span>
                 )}
               </div>
@@ -724,7 +749,7 @@ const getProfile = async (userId) => {
 
   // Folder view component
   const FolderView = () => {
-    const folderAssets = assets.filter(asset => asset.folder_id === selectedFolder?.id);
+    const folderAssets = (assets || []).filter(asset => asset.folder_id === selectedFolder?.id);
 
     return (
       <div className="space-y-6">
@@ -760,12 +785,12 @@ const getProfile = async (userId) => {
               <div className="p-4">
                 <h4 className="font-medium text-gray-900 text-sm mb-2 truncate">{asset.name}</h4>
                 <p className="text-xs text-gray-500 mb-3">
-                  {asset.profiles?.name} • {new Date(asset.created_at).toLocaleDateString()} • 
+                  {asset.profiles?.name || 'Unknown'} • {new Date(asset.created_at).toLocaleDateString()} • 
                   {asset.file_size ? ` ${(asset.file_size / (1024 * 1024)).toFixed(1)}MB` : ''}
                 </p>
                 
                 <div className="flex flex-wrap gap-1 mb-3">
-                  {asset.tags?.slice(0, 2).map(tag => (
+                  {(asset.tags || []).slice(0, 2).map(tag => (
                     <span key={tag} className="px-2 py-1 bg-gray-100 text-xs text-gray-600 rounded-full">
                       {tag}
                     </span>
@@ -829,222 +854,222 @@ const getProfile = async (userId) => {
       <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
         <div className="bg-white rounded-xl max-w-lg w-full max-h-[90vh] overflow-y-auto">
           <div className="p-6 border-b border-gray-200">
-           <div className="flex items-center justify-between">
-             <h2 className="text-lg font-semibold text-gray-900">Upload Assets</h2>
-             <button onClick={() => setShowUpload(false)} className="text-gray-400 hover:text-gray-600">
-               <X className="h-5 w-5" />
-             </button>
-           </div>
-         </div>
-         
-         <form onSubmit={handleUpload} className="p-6 space-y-4">
-           <div>
-             <label className="block text-sm font-medium text-gray-700 mb-2">Select Files</label>
-             <input
-               type="file"
-               multiple
-               accept="image/*,video/*"
-               onChange={(e) => setUploadFiles(Array.from(e.target.files))}
-               className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:border-pink-500"
-               required
-             />
-             <p className="text-xs text-gray-500 mt-1">Select images or videos to upload</p>
-           </div>
-           
-           <div>
-             <label className="block text-sm font-medium text-gray-700 mb-2">Tags</label>
-             <input
-               type="text"
-               value={uploadTags}
-               onChange={(e) => setUploadTags(e.target.value)}
-               placeholder="customer, interview, testimonial"
-               className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:border-pink-500"
-             />
-             <p className="text-xs text-gray-500 mt-1">Separate tags with commas</p>
-           </div>
-           
-           {selectedFolder && (
-             <div className="bg-blue-50 p-3 rounded-lg">
-               <p className="text-sm text-blue-800">
-                 Files will be uploaded to: <span className="font-medium">{selectedFolder.name}</span>
-               </p>
-             </div>
-           )}
-           
-           <div className="flex space-x-3 pt-4">
-             <button
-               type="button"
-               onClick={() => setShowUpload(false)}
-               className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
-               disabled={uploading}
-             >
-               Cancel
-             </button>
-             <button
-               type="submit"
-               disabled={uploading || uploadFiles.length === 0}
-               className="flex-1 bg-gradient-to-r from-pink-500 to-pink-400 text-white px-4 py-2 rounded-lg hover:from-pink-600 hover:to-pink-500 transition-colors disabled:opacity-50"
-             >
-               {uploading ? 'Uploading...' : 'Upload'}
-             </button>
-           </div>
-         </form>
-       </div>
-     </div>
-   );
- };
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-semibold text-gray-900">Upload Assets</h2>
+              <button onClick={() => setShowUpload(false)} className="text-gray-400 hover:text-gray-600">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+          </div>
+          
+          <form onSubmit={handleUpload} className="p-6 space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Select Files</label>
+              <input
+                type="file"
+                multiple
+                accept="image/*,video/*"
+                onChange={(e) => setUploadFiles(Array.from(e.target.files))}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:border-pink-500"
+                required
+              />
+              <p className="text-xs text-gray-500 mt-1">Select images or videos to upload</p>
+            </div>
+            
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Tags</label>
+              <input
+                type="text"
+                value={uploadTags}
+                onChange={(e) => setUploadTags(e.target.value)}
+                placeholder="customer, interview, testimonial"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:border-pink-500"
+              />
+              <p className="text-xs text-gray-500 mt-1">Separate tags with commas</p>
+            </div>
+            
+            {selectedFolder && (
+              <div className="bg-blue-50 p-3 rounded-lg">
+                <p className="text-sm text-blue-800">
+                  Files will be uploaded to: <span className="font-medium">{selectedFolder.name}</span>
+                </p>
+              </div>
+            )}
+            
+            <div className="flex space-x-3 pt-4">
+              <button
+                type="button"
+                onClick={() => setShowUpload(false)}
+                className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
+                disabled={uploading}
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={uploading || uploadFiles.length === 0}
+                className="flex-1 bg-gradient-to-r from-pink-500 to-pink-400 text-white px-4 py-2 rounded-lg hover:from-pink-600 hover:to-pink-500 transition-colors disabled:opacity-50"
+              >
+                {uploading ? 'Uploading...' : 'Upload'}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    );
+  };
 
- // Admin panel component
- const AdminPanel = () => (
-   <div className="space-y-6">
-     <h1 className="text-2xl font-bold text-gray-900">Admin Panel</h1>
-     
-     {/* Pending Approvals */}
-     {pendingUsers.length > 0 && (
-       <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-6">
-         <h2 className="text-lg font-semibold text-yellow-800 mb-4">Pending User Approvals</h2>
-         <div className="space-y-3">
-           {pendingUsers.map(user => (
-             <div key={user.id} className="flex items-center justify-between bg-white p-4 rounded-lg">
-               <div>
-                 <p className="font-medium text-gray-900">{user.name}</p>
-                 <p className="text-sm text-gray-600">
-                   {user.email} • Requested {new Date(user.created_at).toLocaleDateString()}
-                 </p>
-               </div>
-               <button
-                 onClick={() => approveUser(user.id)}
-                 className="bg-green-500 text-white px-4 py-2 rounded-lg hover:bg-green-600 transition-colors"
-               >
-                 Approve
-               </button>
-             </div>
-           ))}
-         </div>
-       </div>
-     )}
-     
-     {/* User Management */}
-     <div className="bg-white border border-gray-200 rounded-lg p-6">
-       <h2 className="text-lg font-semibold text-gray-900 mb-4">Active Users</h2>
-       <div className="space-y-3">
-         {users.map(user => (
-           <div key={user.id} className="flex items-center justify-between p-4 hover:bg-gray-50 rounded-lg">
-             <div className="flex items-center space-x-3">
-               <div className="w-10 h-10 bg-pink-100 rounded-full flex items-center justify-center">
-                 <User className="h-5 w-5 text-pink-600" />
-               </div>
-               <div>
-                 <p className="font-medium text-gray-900">{user.name}</p>
-                 <p className="text-sm text-gray-600">{user.email} • {user.role}</p>
-               </div>
-             </div>
-             <div className="flex items-center space-x-2">
-               <span className={`px-2 py-1 rounded-full text-xs ${
-                 user.role === 'admin' ? 'bg-purple-100 text-purple-800' : 'bg-blue-100 text-blue-800'
-               }`}>
-                 {user.role}
-               </span>
-             </div>
-           </div>
-         ))}
-       </div>
-     </div>
-     
-     {/* Storage Statistics */}
-     <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-       <div className="bg-white border border-gray-200 rounded-lg p-6 text-center">
-         <div className="text-2xl font-bold text-pink-600 mb-2">{assets.length}</div>
-         <div className="text-gray-600">Total Assets</div>
-       </div>
-       <div className="bg-white border border-gray-200 rounded-lg p-6 text-center">
-         <div className="text-2xl font-bold text-blue-600 mb-2">{folders.length}</div>
-         <div className="text-gray-600">Active Folders</div>
-       </div>
-       <div className="bg-white border border-gray-200 rounded-lg p-6 text-center">
-         <div className="text-2xl font-bold text-green-600 mb-2">{users.length}</div>
-         <div className="text-gray-600">Active Users</div>
-       </div>
-     </div>
-   </div>
- );
+  // Admin panel component
+  const AdminPanel = () => (
+    <div className="space-y-6">
+      <h1 className="text-2xl font-bold text-gray-900">Admin Panel</h1>
+      
+      {/* Pending Approvals */}
+      {(pendingUsers || []).length > 0 && (
+        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-6">
+          <h2 className="text-lg font-semibold text-yellow-800 mb-4">Pending User Approvals</h2>
+          <div className="space-y-3">
+            {pendingUsers.map(user => (
+              <div key={user.id} className="flex items-center justify-between bg-white p-4 rounded-lg">
+                <div>
+                  <p className="font-medium text-gray-900">{user.name}</p>
+                  <p className="text-sm text-gray-600">
+                    {user.email} • Requested {new Date(user.created_at).toLocaleDateString()}
+                  </p>
+                </div>
+                <button
+                  onClick={() => approveUser(user.id)}
+                  className="bg-green-500 text-white px-4 py-2 rounded-lg hover:bg-green-600 transition-colors"
+                >
+                  Approve
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      
+      {/* User Management */}
+      <div className="bg-white border border-gray-200 rounded-lg p-6">
+        <h2 className="text-lg font-semibold text-gray-900 mb-4">Active Users</h2>
+        <div className="space-y-3">
+          {(users || []).map(user => (
+            <div key={user.id} className="flex items-center justify-between p-4 hover:bg-gray-50 rounded-lg">
+              <div className="flex items-center space-x-3">
+                <div className="w-10 h-10 bg-pink-100 rounded-full flex items-center justify-center">
+                  <User className="h-5 w-5 text-pink-600" />
+                </div>
+                <div>
+                  <p className="font-medium text-gray-900">{user.name}</p>
+                  <p className="text-sm text-gray-600">{user.email} • {user.role || 'user'}</p>
+                </div>
+              </div>
+              <div className="flex items-center space-x-2">
+                <span className={`px-2 py-1 rounded-full text-xs ${
+                  user.role === 'admin' ? 'bg-purple-100 text-purple-800' : 'bg-blue-100 text-blue-800'
+                }`}>
+                  {user.role || 'user'}
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+      
+      {/* Storage Statistics */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="bg-white border border-gray-200 rounded-lg p-6 text-center">
+          <div className="text-2xl font-bold text-pink-600 mb-2">{(assets || []).length}</div>
+          <div className="text-gray-600">Total Assets</div>
+        </div>
+        <div className="bg-white border border-gray-200 rounded-lg p-6 text-center">
+          <div className="text-2xl font-bold text-blue-600 mb-2">{(folders || []).length}</div>
+          <div className="text-gray-600">Active Folders</div>
+        </div>
+        <div className="bg-white border border-gray-200 rounded-lg p-6 text-center">
+          <div className="text-2xl font-bold text-green-600 mb-2">{(users || []).length}</div>
+          <div className="text-gray-600">Active Users</div>
+        </div>
+      </div>
+    </div>
+  );
 
- // Mobile menu component
- const MobileMenu = () => (
-   <div className={`lg:hidden fixed inset-0 z-50 ${showMobileMenu ? 'block' : 'hidden'}`}>
-     <div className="fixed inset-0 bg-black bg-opacity-50" onClick={() => setShowMobileMenu(false)} />
-     <div className="fixed left-0 top-0 bottom-0 w-64 bg-white shadow-xl">
-       <div className="p-4 border-b border-gray-200">
-         <div className="flex items-center justify-between">
-           <span className="text-lg font-semibold">Menu</span>
-           <button onClick={() => setShowMobileMenu(false)}>
-             <X className="h-6 w-6 text-gray-400" />
-           </button>
-         </div>
-       </div>
-       
-       <nav className="p-4 space-y-2">
-         <button
-           onClick={goHome}
-           className="w-full flex items-center space-x-3 px-3 py-2 text-left hover:bg-gray-100 rounded-lg"
-         >
-           <Home className="h-5 w-5 text-gray-400" />
-           <span>Dashboard</span>
-         </button>
-         
-         <button
-           onClick={() => { setShowUpload(true); setShowMobileMenu(false); }}
-           className="w-full flex items-center space-x-3 px-3 py-2 text-left hover:bg-gray-100 rounded-lg"
-         >
-           <Upload className="h-5 w-5 text-gray-400" />
-           <span>Upload Assets</span>
-         </button>
-         
-         {currentUser?.role === 'admin' && (
-           <button
-             onClick={() => { navigateTo('admin'); setShowMobileMenu(false); }}
-             className="w-full flex items-center space-x-3 px-3 py-2 text-left hover:bg-gray-100 rounded-lg"
-           >
-             <Settings className="h-5 w-5 text-gray-400" />
-             <span>Admin Panel</span>
-           </button>
-         )}
+  // Mobile menu component
+  const MobileMenu = () => (
+    <div className={`lg:hidden fixed inset-0 z-50 ${showMobileMenu ? 'block' : 'hidden'}`}>
+      <div className="fixed inset-0 bg-black bg-opacity-50" onClick={() => setShowMobileMenu(false)} />
+      <div className="fixed left-0 top-0 bottom-0 w-64 bg-white shadow-xl">
+        <div className="p-4 border-b border-gray-200">
+          <div className="flex items-center justify-between">
+            <span className="text-lg font-semibold">Menu</span>
+            <button onClick={() => setShowMobileMenu(false)}>
+              <X className="h-6 w-6 text-gray-400" />
+            </button>
+          </div>
+        </div>
+        
+        <nav className="p-4 space-y-2">
+          <button
+            onClick={goHome}
+            className="w-full flex items-center space-x-3 px-3 py-2 text-left hover:bg-gray-100 rounded-lg"
+          >
+            <Home className="h-5 w-5 text-gray-400" />
+            <span>Dashboard</span>
+          </button>
+          
+          <button
+            onClick={() => { setShowUpload(true); setShowMobileMenu(false); }}
+            className="w-full flex items-center space-x-3 px-3 py-2 text-left hover:bg-gray-100 rounded-lg"
+          >
+            <Upload className="h-5 w-5 text-gray-400" />
+            <span>Upload Assets</span>
+          </button>
+          
+          {profile?.role === 'admin' && (
+            <button
+              onClick={() => { navigateTo('admin'); setShowMobileMenu(false); }}
+              className="w-full flex items-center space-x-3 px-3 py-2 text-left hover:bg-gray-100 rounded-lg"
+            >
+              <Settings className="h-5 w-5 text-gray-400" />
+              <span>Admin Panel</span>
+            </button>
+          )}
 
-         <button
-           onClick={handleSignOut}
-           className="w-full flex items-center space-x-3 px-3 py-2 text-left hover:bg-gray-100 rounded-lg"
-         >
-           <LogOut className="h-5 w-5 text-gray-400" />
-           <span>Sign Out</span>
-         </button>
-       </nav>
-     </div>
-   </div>
- );
+          <button
+            onClick={handleSignOut}
+            className="w-full flex items-center space-x-3 px-3 py-2 text-left hover:bg-gray-100 rounded-lg"
+          >
+            <LogOut className="h-5 w-5 text-gray-400" />
+            <span>Sign Out</span>
+          </button>
+        </nav>
+      </div>
+    </div>
+  );
 
- // Main render logic
- if (currentView === 'pending') {
-   return <PendingScreen />;
- }
+  // Main render logic
+  if (currentView === 'pending') {
+    return <PendingScreen />;
+  }
 
- if (!currentUser) {
-   return <AuthScreen />;
- }
+  if (!currentUser) {
+    return <AuthScreen />;
+  }
 
- return (
-   <div className="min-h-screen bg-gray-50">
-     <Header />
-     <MobileMenu />
-     
-     <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-       {currentView === 'dashboard' && <Dashboard />}
-       {currentView === 'folder' && <FolderView />}
-       {currentView === 'admin' && currentUser.role === 'admin' && <AdminPanel />}
-     </main>
-     
-     {showUpload && <UploadModal />}
-   </div>
- );
+  return (
+    <div className="min-h-screen bg-gray-50">
+      <Header />
+      <MobileMenu />
+      
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {currentView === 'dashboard' && <Dashboard />}
+        {currentView === 'folder' && <FolderView />}
+        {currentView === 'admin' && profile?.role === 'admin' && <AdminPanel />}
+      </main>
+      
+      {showUpload && <UploadModal />}
+    </div>
+  );
 }
 
 export default App;

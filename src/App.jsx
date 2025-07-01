@@ -64,14 +64,15 @@ function App() {
 
       if (error) throw error;
 
-      if (data && data.status === 'active') {
-        setCurrentUser(data);
-        setCurrentView('dashboard');
-        loadFolders();
-        loadAssets();
-        if (data.role === 'admin') {
-          loadUsers();
-        }
+   if (data && data.status === 'active') {
+  setCurrentUser(data);
+  setCurrentView('dashboard');
+  // loadFolders();
+  // loadAssets();
+  // if (data.role === 'admin') {
+  //   loadUsers();
+  // }
+}
       } else if (data && data.status === 'pending') {
         setCurrentView('pending');
       }

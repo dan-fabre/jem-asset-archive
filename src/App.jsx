@@ -21,74 +21,122 @@ function App() {
   const [pendingUsers, setPendingUsers] = useState([]);
   const [showMobileMenu, setShowMobileMenu] = useState(false);
   const [error, setError] = useState('');
+  const [authInitialized, setAuthInitialized] = useState(false);
 
-  // Authentication and session management
+  // Enhanced authentication with bulletproof error handling
   useEffect(() => {
     let isMounted = true;
+    let authTimeout;
+
+    const safeSetState = (setter, value) => {
+      if (isMounted) {
+        try {
+          setter(value);
+        } catch (error) {
+          console.error('State update error:', error);
+        }
+      }
+    };
+
+    const handleAuthTimeout = () => {
+      console.log('⏰ Auth timeout - forcing login view');
+      if (isMounted) {
+        safeSetState(setLoading, false);
+        safeSetState(setCurrentView, 'login');
+        safeSetState(setAuthInitialized, true);
+      }
+    };
 
     const getInitialSession = async () => {
       try {
-        console.log('Getting initial session...');
+        console.log('🔄 Getting initial session...');
+        
+        // Set a timeout to prevent infinite loading
+        authTimeout = setTimeout(handleAuthTimeout, 10000); // 10 second timeout
+        
         const { data: { session }, error } = await supabase.auth.getSession();
         
+        if (authTimeout) {
+          clearTimeout(authTimeout);
+          authTimeout = null;
+        }
+        
         if (error) {
-          console.error('Error getting session:', error);
+          console.error('❌ Error getting session:', error);
           if (isMounted) {
-            setCurrentView('login');
-            setLoading(false);
+            safeSetState(setCurrentView, 'login');
+            safeSetState(setLoading, false);
+            safeSetState(setAuthInitialized, true);
           }
           return;
         }
 
         if (session?.user && isMounted) {
-          console.log('Session found, getting profile...');
+          console.log('✅ Session found for:', session.user.email);
           try {
-            await getProfile(session.user.id);
+            await getProfileSafe(session.user.id);
           } catch (profileError) {
-            console.error('Error loading profile:', profileError);
-            setCurrentUser(session.user);
-            setCurrentView('dashboard');
+            console.error('⚠️ Profile loading failed, using basic user data:', profileError);
+            // Fallback: set basic user data and go to dashboard
+            safeSetState(setCurrentUser, {
+              id: session.user.id,
+              email: session.user.email,
+              name: session.user.user_metadata?.name || session.user.email.split('@')[0],
+              role: 'user'
+            });
+            safeSetState(setCurrentView, 'dashboard');
           }
         } else if (isMounted) {
-          setCurrentView('login');
+          console.log('❌ No session found');
+          safeSetState(setCurrentView, 'login');
         }
         
         if (isMounted) {
-          setLoading(false);
+          safeSetState(setLoading, false);
+          safeSetState(setAuthInitialized, true);
         }
       } catch (error) {
-        console.error('Session check failed:', error);
+        console.error('💥 Session check failed:', error);
         if (isMounted) {
-          setCurrentView('login');
-          setLoading(false);
+          safeSetState(setCurrentView, 'login');
+          safeSetState(setLoading, false);
+          safeSetState(setAuthInitialized, true);
         }
       }
     };
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, session) => {
-        console.log('Auth state changed:', event, session?.user?.email);
+        console.log('🔄 Auth state changed:', event, session?.user?.email);
         
         if (!isMounted) return;
 
         if (session?.user) {
           try {
-            await getProfile(session.user.id);
+            await getProfileSafe(session.user.id);
           } catch (error) {
-            console.error('Error loading profile in auth change:', error);
-            setCurrentUser(session.user);
-            setCurrentView('dashboard');
+            console.error('⚠️ Profile loading failed in auth change:', error);
+            // Fallback: set basic user data
+            safeSetState(setCurrentUser, {
+              id: session.user.id,
+              email: session.user.email,
+              name: session.user.user_metadata?.name || session.user.email.split('@')[0],
+              role: 'user'
+            });
+            safeSetState(setCurrentView, 'dashboard');
           }
         } else {
-          setCurrentUser(null);
-          setCurrentView('login');
-          setFolders([]);
-          setAssets([]);
-          setUsers([]);
-          setPendingUsers([]);
+          console.log('🚪 User signed out');
+          safeSetState(setCurrentUser, null);
+          safeSetState(setCurrentView, 'login');
+          safeSetState(setFolders, []);
+          safeSetState(setAssets, []);
+          safeSetState(setUsers, []);
+          safeSetState(setPendingUsers, []);
         }
         
-        setLoading(false);
+        safeSetState(setLoading, false);
+        safeSetState(setAuthInitialized, true);
       }
     );
 
@@ -96,73 +144,136 @@ function App() {
 
     return () => {
       isMounted = false;
+      if (authTimeout) {
+        clearTimeout(authTimeout);
+      }
       subscription.unsubscribe();
     };
   }, []);
 
-  const getProfile = async (userId) => {
+  // Bulletproof profile loading with fallbacks
+  const getProfileSafe = async (userId) => {
     try {
-      console.log('Getting profile for user:', userId);
+      console.log('👤 Getting profile for user:', userId);
+      
       const { data, error } = await supabase
         .from('profiles')
         .select('*')
         .eq('id', userId)
         .single();
 
-      console.log('Profile query result:', { data, error });
-
       if (error) {
-        console.error('Profile fetch error:', error);
-        throw error;
+        console.error('❌ Profile fetch error:', error);
+        // Don't throw - handle gracefully
+        return handleProfileFallback(userId);
       }
 
       if (data) {
-        console.log('Profile found:', data);
+        console.log('✅ Profile found:', data);
         
         if (data.status === 'active') {
           setCurrentUser(data);
           setCurrentView('dashboard');
-          loadFolders();
-          loadAssets();
-          if (data.role === 'admin') {
-            loadUsers();
-          }
+          
+          // Load data in background - don't let these block the UI
+          setTimeout(() => {
+            loadDataSafely();
+          }, 100);
+          
         } else if (data.status === 'pending') {
           setCurrentView('pending');
         } else {
           setCurrentView('login');
         }
       } else {
-        console.log('No profile data returned');
+        console.log('❌ No profile data returned');
+        return handleProfileFallback(userId);
+      }
+    } catch (error) {
+      console.error('💥 Error in getProfileSafe:', error);
+      return handleProfileFallback(userId);
+    }
+  };
+
+  // Fallback when profile loading fails
+  const handleProfileFallback = async (userId) => {
+    console.log('🔄 Using profile fallback for user:', userId);
+    try {
+      // Get basic user info from auth
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        setCurrentUser({
+          id: user.id,
+          email: user.email,
+          name: user.user_metadata?.name || user.email.split('@')[0],
+          role: 'user',
+          status: 'active'
+        });
+        setCurrentView('dashboard');
+        
+        // Try to load data in background
+        setTimeout(() => {
+          loadDataSafely();
+        }, 100);
+      } else {
         setCurrentView('login');
       }
     } catch (error) {
-      console.error('Error in getProfile:', error);
-      setCurrentUser(null);
+      console.error('💥 Fallback failed:', error);
       setCurrentView('login');
     }
   };
 
-  const loadFolders = async () => {
+  // Safe data loading that won't break the app
+  const loadDataSafely = async () => {
+    console.log('📊 Loading app data safely...');
+    
+    // Load each data type independently with error handling
     try {
-      console.log('Loading folders...');
+      await loadFoldersSafe();
+    } catch (error) {
+      console.error('📁 Folder loading failed:', error);
+    }
+    
+    try {
+      await loadAssetsSafe();
+    } catch (error) {
+      console.error('🖼️ Asset loading failed:', error);
+    }
+    
+    try {
+      if (currentUser?.role === 'admin') {
+        await loadUsersSafe();
+      }
+    } catch (error) {
+      console.error('👥 User loading failed:', error);
+    }
+  };
+
+  const loadFoldersSafe = async () => {
+    try {
+      console.log('📁 Loading folders...');
       const { data, error } = await supabase
         .from('folders')
         .select('*')
         .order('created_at', { ascending: false });
 
-      if (error) throw error;
+      if (error) {
+        console.error('📁 Folder query error:', error);
+        return;
+      }
+      
       setFolders(data || []);
-      console.log('Loaded folders:', data?.length || 0);
+      console.log('✅ Folders loaded:', (data || []).length);
     } catch (error) {
-      console.error('Error loading folders:', error);
+      console.error('💥 loadFoldersSafe error:', error);
       setFolders([]);
     }
   };
 
-  const loadAssets = async () => {
+  const loadAssetsSafe = async () => {
     try {
-      console.log('Loading assets...');
+      console.log('🖼️ Loading assets...');
       const { data, error } = await supabase
         .from('assets')
         .select(`
@@ -172,43 +283,51 @@ function App() {
         `)
         .order('created_at', { ascending: false });
 
-      if (error) throw error;
+      if (error) {
+        console.error('🖼️ Asset query error:', error);
+        return;
+      }
+      
       setAssets(data || []);
-      console.log('Loaded assets:', data?.length || 0);
+      console.log('✅ Assets loaded:', (data || []).length);
     } catch (error) {
-      console.error('Error loading assets:', error);
+      console.error('💥 loadAssetsSafe error:', error);
       setAssets([]);
     }
   };
 
-  const loadUsers = async () => {
+  const loadUsersSafe = async () => {
     try {
-      console.log('Loading users...');
+      console.log('👥 Loading users...');
       const { data, error } = await supabase
         .from('profiles')
         .select('*')
         .order('created_at', { ascending: false });
 
-      if (error) throw error;
+      if (error) {
+        console.error('👥 User query error:', error);
+        return;
+      }
       
       const activeUsers = (data || []).filter(user => user.status === 'active');
       const pending = (data || []).filter(user => user.status === 'pending');
       
       setUsers(activeUsers);
       setPendingUsers(pending);
-      console.log('Loaded users:', activeUsers.length, 'pending:', pending.length);
+      console.log('✅ Users loaded:', activeUsers.length, 'pending:', pending.length);
     } catch (error) {
-      console.error('Error loading users:', error);
+      console.error('💥 loadUsersSafe error:', error);
       setUsers([]);
       setPendingUsers([]);
     }
   };
 
-  // Authentication functions
+  // Authentication functions with enhanced error handling
   const handleSignUp = async (email, password, name) => {
     try {
       setError('');
-      console.log('Signing up user:', email);
+      setLoading(true);
+      console.log('📝 Signing up user:', email);
       
       const { data, error } = await supabase.auth.signUp({
         email,
@@ -223,18 +342,21 @@ function App() {
       if (error) throw error;
 
       if (data.user) {
-        console.log('User signed up successfully');
+        console.log('✅ User signed up successfully');
       }
     } catch (error) {
-      console.error('Error signing up:', error);
+      console.error('❌ Error signing up:', error);
       setError(error.message);
+    } finally {
+      setLoading(false);
     }
   };
 
   const handleSignIn = async (email, password) => {
     try {
       setError('');
-      console.log('Signing in user:', email);
+      setLoading(true);
+      console.log('🔑 Signing in user:', email);
       
       const { data, error } = await supabase.auth.signInWithPassword({
         email,
@@ -242,19 +364,23 @@ function App() {
       });
 
       if (error) throw error;
-      console.log('User signed in successfully');
+      console.log('✅ User signed in successfully');
     } catch (error) {
-      console.error('Error signing in:', error);
+      console.error('❌ Error signing in:', error);
       setError(error.message);
+      setLoading(false);
     }
   };
 
   const handleSignOut = async () => {
     try {
-      console.log('Signing out user');
+      console.log('🚪 Signing out user');
+      setLoading(true);
+      
       const { error } = await supabase.auth.signOut();
       if (error) throw error;
       
+      // Clear all state
       setCurrentUser(null);
       setCurrentView('login');
       setFolders([]);
@@ -266,14 +392,17 @@ function App() {
       setSearchTerm('');
       setShowUpload(false);
       setShowMobileMenu(false);
+      setError('');
     } catch (error) {
-      console.error('Error signing out:', error);
+      console.error('❌ Error signing out:', error);
+    } finally {
+      setLoading(false);
     }
   };
 
   const approveUser = async (userId) => {
     try {
-      console.log('Approving user:', userId);
+      console.log('✅ Approving user:', userId);
       const { error } = await supabase
         .from('profiles')
         .update({ status: 'active' })
@@ -281,10 +410,11 @@ function App() {
 
       if (error) throw error;
       
-      await loadUsers();
-      console.log('User approved successfully');
+      await loadUsersSafe();
+      console.log('✅ User approved successfully');
     } catch (error) {
-      console.error('Error approving user:', error);
+      console.error('❌ Error approving user:', error);
+      setError('Failed to approve user');
     }
   };
 
@@ -311,10 +441,10 @@ function App() {
     setShowMobileMenu(false);
   };
 
-  // Asset and folder functions
+  // Asset and folder functions with error handling
   const createFolder = async (name, type, tags, parentId = null) => {
     try {
-      console.log('Creating folder:', name);
+      console.log('📁 Creating folder:', name);
       const { data, error } = await supabase
         .from('folders')
         .insert([{
@@ -330,18 +460,19 @@ function App() {
 
       if (error) throw error;
       
-      await loadFolders();
-      console.log('Folder created successfully');
+      await loadFoldersSafe();
+      console.log('✅ Folder created successfully');
       return data;
     } catch (error) {
-      console.error('Error creating folder:', error);
+      console.error('❌ Error creating folder:', error);
+      setError('Failed to create folder');
       throw error;
     }
   };
 
   const uploadFile = async (file, folderId, tags) => {
     try {
-      console.log('Uploading file:', file.name, 'to folder:', folderId);
+      console.log('📤 Uploading file:', file.name, 'to folder:', folderId);
       const fileExt = file.name.split('.').pop();
       const fileName = `${Date.now()}-${Math.random().toString(36).substring(2)}.${fileExt}`;
       const filePath = `${folderId || 'general'}/${fileName}`;
@@ -370,18 +501,19 @@ function App() {
 
       if (error) throw error;
       
-      await loadAssets();
-      console.log('File uploaded successfully');
+      await loadAssetsSafe();
+      console.log('✅ File uploaded successfully');
       return data;
     } catch (error) {
-      console.error('Error uploading file:', error);
+      console.error('❌ Error uploading file:', error);
+      setError('Failed to upload file');
       throw error;
     }
   };
 
   const downloadFile = async (filePath, fileName) => {
     try {
-      console.log('Downloading file:', filePath);
+      console.log('📥 Downloading file:', filePath);
       const { data, error } = await supabase.storage
         .from('assets')
         .download(filePath);
@@ -396,28 +528,39 @@ function App() {
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-      console.log('File downloaded successfully');
+      console.log('✅ File downloaded successfully');
     } catch (error) {
-      console.error('Error downloading file:', error);
+      console.error('❌ Error downloading file:', error);
+      setError('Failed to download file');
     }
   };
 
-  // Filter functions with safety checks
+  // Safe filter functions
   const filteredAssets = (assets || []).filter(asset => {
-    const matchesSearch = asset.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         (asset.tags || []).some(tag => tag.toLowerCase().includes(searchTerm.toLowerCase()));
-    const matchesFolder = selectedFolder ? asset.folder_id === selectedFolder.id : true;
-    return matchesSearch && matchesFolder;
+    try {
+      const matchesSearch = asset.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                           (asset.tags || []).some(tag => tag.toLowerCase().includes(searchTerm.toLowerCase()));
+      const matchesFolder = selectedFolder ? asset.folder_id === selectedFolder.id : true;
+      return matchesSearch && matchesFolder;
+    } catch (error) {
+      console.error('Filter error:', error);
+      return false;
+    }
   });
 
   const filteredFolders = (folders || []).filter(folder => {
-    const matchesSearch = folder.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         (folder.tags || []).some(tag => tag.toLowerCase().includes(searchTerm.toLowerCase()));
-    return matchesSearch && !folder.parent_id;
+    try {
+      const matchesSearch = folder.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                           (folder.tags || []).some(tag => tag.toLowerCase().includes(searchTerm.toLowerCase()));
+      return matchesSearch && !folder.parent_id;
+    } catch (error) {
+      console.error('Filter error:', error);
+      return false;
+    }
   });
 
-  // Loading screen
-  if (loading) {
+  // Enhanced loading screen with timeout protection
+  if (loading || !authInitialized) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-pink-50 to-orange-50 flex items-center justify-center">
         <div className="text-center">
@@ -425,6 +568,18 @@ function App() {
             <span className="text-2xl font-bold">jem</span>
           </div>
           <p className="text-gray-600">Loading...</p>
+          {loading && (
+            <button 
+              onClick={() => {
+                setLoading(false);
+                setCurrentView('login');
+                setAuthInitialized(true);
+              }}
+              className="mt-4 text-sm text-gray-500 hover:text-gray-700 underline"
+            >
+              Taking too long? Click here to continue
+            </button>
+          )}
         </div>
       </div>
     );
@@ -464,6 +619,12 @@ function App() {
           {error && (
             <div className="mb-4 p-3 bg-red-100 border border-red-400 text-red-700 rounded">
               {error}
+              <button 
+                onClick={() => setError('')}
+                className="ml-2 text-red-500 hover:text-red-700"
+              >
+                ×
+              </button>
             </div>
           )}
           
@@ -506,9 +667,10 @@ function App() {
               </div>
               <button
                 type="submit"
-                className="w-full bg-gradient-to-r from-pink-500 to-pink-400 text-white py-2 px-4 rounded-lg hover:from-pink-600 hover:to-pink-500 transition-colors"
+                disabled={loading}
+                className="w-full bg-gradient-to-r from-pink-500 to-pink-400 text-white py-2 px-4 rounded-lg hover:from-pink-600 hover:to-pink-500 transition-colors disabled:opacity-50"
               >
-                {isSignUp ? 'Create Account' : 'Sign In'}
+                {loading ? 'Please wait...' : (isSignUp ? 'Create Account' : 'Sign In')}
               </button>
             </div>
           </form>
@@ -517,8 +679,12 @@ function App() {
             <p className="text-sm text-gray-600">
               {isSignUp ? 'Already have an account?' : "Don't have an account?"}{' '}
               <button 
-                onClick={() => setIsSignUp(!isSignUp)}
+                onClick={() => {
+                  setIsSignUp(!isSignUp);
+                  setError('');
+                }}
                 className="text-pink-500 hover:text-pink-600"
+                disabled={loading}
               >
                 {isSignUp ? 'Sign In' : 'Sign Up'}
               </button>
@@ -854,7 +1020,7 @@ function App() {
                 type="file"
                 multiple
                 accept="image/*,video/*"
-                onChange={(e) => setUploadFiles(Array.from(e.target.files))}
+                onChange={(e) => setUploadFiles(Array.from(e.target.files || []))}
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:border-pink-500"
                 required
               />
@@ -1053,6 +1219,20 @@ function App() {
       </main>
       
       {showUpload && <UploadModal />}
+      
+      {error && (
+        <div className="fixed bottom-4 right-4 bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded shadow-lg">
+          <div className="flex items-center justify-between">
+            <span>{error}</span>
+            <button 
+              onClick={() => setError('')}
+              className="ml-2 text-red-500 hover:text-red-700"
+            >
+              ×
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

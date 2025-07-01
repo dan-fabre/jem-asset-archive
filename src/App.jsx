@@ -74,85 +74,62 @@ function App() {
         
         if (!isMounted) return;
 
-        if (session?.user) {
-          try {
-            await getProfile(session.user.id);
-          } catch (error) {
-            console.error('Error loading profile in auth change:', error);
-            setCurrentUser(session.user);
-            setCurrentView('dashboard');
-          }
-        } else {
-          setCurrentUser(null);
-          setProfile(null);
-          setCurrentView('login');
-          setFolders([]);
-          setAssets([]);
-          setUsers([]);
-          setPendingUsers([]);
-        }
-        
-        setLoading(false);
-      }
-    );
+       const getProfile = async (userId) => {
+  try {
+    console.log('Getting profile for user:', userId);
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('id', userId)
+      .single();
 
-    // Get initial session
-    getInitialSession();
+    console.log('Profile query result:', { data, error });
 
-    // Cleanup function
-    return () => {
-      isMounted = false;
-      subscription.unsubscribe();
-    };
-  }, []);
-
-  // Load data when user changes
-  useEffect(() => {
-    if (currentUser && profile) {
-      loadFolders();
-      loadAssets();
-      if (profile.role === 'admin') {
-        loadUsers();
-      }
-    }
-  }, [currentUser, profile]);
-
-  const getProfile = async (userId) => {
-    try {
-      console.log('Getting profile for user:', userId);
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', userId)
-        .single();
-
-      if (error) {
-        console.error('Profile fetch error:', error);
-        throw error;
-      }
-
-      console.log('Profile data:', data);
-
-      if (data) {
-        setProfile(data);
-        
-        if (data.status === 'active') {
-          setCurrentUser({ id: userId, ...data });
-          setCurrentView('dashboard');
-        } else if (data.status === 'pending') {
-          setCurrentView('pending');
-        } else {
-          setCurrentView('login');
-        }
-      } else {
-        // No profile found, user might need to complete registration
+    if (error) {
+      console.error('Profile fetch error:', error);
+      // If profile doesn't exist, create a basic one
+      if (error.code === 'PGRST116') {
+        console.log('No profile found, user needs to complete setup');
         setCurrentView('login');
+        return;
       }
-    } catch (error) {
-      console.error('Error in getProfile:', error);
       throw error;
     }
-  };
+
+    if (data) {
+      console.log('Profile found:', data);
+      setProfile(data);
+      
+      // Set the complete user object with profile data
+      setCurrentUser({
+        id: userId,
+        email: data.email,
+        name: data.name,
+        role: data.role
+      });
+      
+      if (data.status === 'active') {
+        console.log('User is active, redirecting to dashboard');
+        setCurrentView('dashboard');
+      } else if (data.status === 'pending') {
+        console.log('User is pending approval');
+        setCurrentView('pending');
+      } else {
+        console.log('User status unknown:', data.status);
+        setCurrentView('login');
+      }
+    } else {
+      console.log('No profile data returned');
+      setCurrentView('login');
+    }
+  } catch (error) {
+    console.error('Error in getProfile:', error);
+    // Don't throw - handle gracefully
+    setCurrentUser(null);
+    setProfile(null);
+    setCurrentView('login');
+  }
+};
 
   const loadFolders = async () => {
     try {

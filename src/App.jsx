@@ -9,7 +9,6 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 
 function App() {
   const [currentUser, setCurrentUser] = useState(null);
-  const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
   const [currentView, setCurrentView] = useState('login');
   const [folders, setFolders] = useState([]);
@@ -23,7 +22,7 @@ function App() {
   const [showMobileMenu, setShowMobileMenu] = useState(false);
   const [error, setError] = useState('');
 
-  // Fixed authentication useEffect - only one needed
+  // Authentication and session management
   useEffect(() => {
     let isMounted = true;
 
@@ -47,7 +46,6 @@ function App() {
             await getProfile(session.user.id);
           } catch (profileError) {
             console.error('Error loading profile:', profileError);
-            // Still set the user even if profile fails
             setCurrentUser(session.user);
             setCurrentView('dashboard');
           }
@@ -67,69 +65,83 @@ function App() {
       }
     };
 
-    // Set up auth state listener
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, session) => {
         console.log('Auth state changed:', event, session?.user?.email);
         
         if (!isMounted) return;
 
-       const getProfile = async (userId) => {
-  try {
-    console.log('Getting profile for user:', userId);
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', userId)
-      .single();
-
-    console.log('Profile query result:', { data, error });
-
-    if (error) {
-      console.error('Profile fetch error:', error);
-      // If profile doesn't exist, create a basic one
-      if (error.code === 'PGRST116') {
-        console.log('No profile found, user needs to complete setup');
-        setCurrentView('login');
-        return;
+        if (session?.user) {
+          try {
+            await getProfile(session.user.id);
+          } catch (error) {
+            console.error('Error loading profile in auth change:', error);
+            setCurrentUser(session.user);
+            setCurrentView('dashboard');
+          }
+        } else {
+          setCurrentUser(null);
+          setCurrentView('login');
+          setFolders([]);
+          setAssets([]);
+          setUsers([]);
+          setPendingUsers([]);
+        }
+        
+        setLoading(false);
       }
-      throw error;
-    }
+    );
 
-    if (data) {
-      console.log('Profile found:', data);
-      setProfile(data);
-      
-      // Set the complete user object with profile data
-      setCurrentUser({
-        id: userId,
-        email: data.email,
-        name: data.name,
-        role: data.role
-      });
-      
-      if (data.status === 'active') {
-        console.log('User is active, redirecting to dashboard');
-        setCurrentView('dashboard');
-      } else if (data.status === 'pending') {
-        console.log('User is pending approval');
-        setCurrentView('pending');
+    getInitialSession();
+
+    return () => {
+      isMounted = false;
+      subscription.unsubscribe();
+    };
+  }, []);
+
+  const getProfile = async (userId) => {
+    try {
+      console.log('Getting profile for user:', userId);
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', userId)
+        .single();
+
+      console.log('Profile query result:', { data, error });
+
+      if (error) {
+        console.error('Profile fetch error:', error);
+        throw error;
+      }
+
+      if (data) {
+        console.log('Profile found:', data);
+        
+        if (data.status === 'active') {
+          setCurrentUser(data);
+          setCurrentView('dashboard');
+          loadFolders();
+          loadAssets();
+          if (data.role === 'admin') {
+            loadUsers();
+          }
+        } else if (data.status === 'pending') {
+          setCurrentView('pending');
+        } else {
+          setCurrentView('login');
+        }
       } else {
-        console.log('User status unknown:', data.status);
+        console.log('No profile data returned');
         setCurrentView('login');
       }
-    } else {
-      console.log('No profile data returned');
+    } catch (error) {
+      console.error('Error in getProfile:', error);
+      setCurrentUser(null);
       setCurrentView('login');
     }
-  } catch (error) {
-    console.error('Error in getProfile:', error);
-    // Don't throw - handle gracefully
-    setCurrentUser(null);
-    setProfile(null);
-    setCurrentView('login');
-  }
-};
+  };
 
   const loadFolders = async () => {
     try {
@@ -212,7 +224,6 @@ function App() {
 
       if (data.user) {
         console.log('User signed up successfully');
-        // The auth state change will handle the rest
       }
     } catch (error) {
       console.error('Error signing up:', error);
@@ -232,7 +243,6 @@ function App() {
 
       if (error) throw error;
       console.log('User signed in successfully');
-      // The auth state change will handle the rest
     } catch (error) {
       console.error('Error signing in:', error);
       setError(error.message);
@@ -245,9 +255,7 @@ function App() {
       const { error } = await supabase.auth.signOut();
       if (error) throw error;
       
-      // Clear all state
       setCurrentUser(null);
-      setProfile(null);
       setCurrentView('login');
       setFolders([]);
       setAssets([]);
@@ -588,7 +596,7 @@ function App() {
               <span className="text-sm text-gray-700 hidden sm:block">{currentUser?.name}</span>
             </div>
 
-            {profile?.role === 'admin' && (
+            {currentUser?.role === 'admin' && (
               <button
                 onClick={() => navigateTo('admin')}
                 className="p-2 text-gray-400 hover:text-gray-600 transition-colors"
@@ -1002,7 +1010,7 @@ function App() {
             <span>Upload Assets</span>
           </button>
           
-          {profile?.role === 'admin' && (
+          {currentUser?.role === 'admin' && (
             <button
               onClick={() => { navigateTo('admin'); setShowMobileMenu(false); }}
               className="w-full flex items-center space-x-3 px-3 py-2 text-left hover:bg-gray-100 rounded-lg"
@@ -1041,7 +1049,7 @@ function App() {
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {currentView === 'dashboard' && <Dashboard />}
         {currentView === 'folder' && <FolderView />}
-        {currentView === 'admin' && profile?.role === 'admin' && <AdminPanel />}
+        {currentView === 'admin' && currentUser.role === 'admin' && <AdminPanel />}
       </main>
       
       {showUpload && <UploadModal />}

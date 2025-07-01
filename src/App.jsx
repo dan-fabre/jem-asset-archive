@@ -38,21 +38,9 @@ function App() {
       }
     };
 
-    const handleAuthTimeout = () => {
-      console.log('⏰ Auth timeout - forcing login view');
-      if (isMounted) {
-        safeSetState(setLoading, false);
-        safeSetState(setCurrentView, 'login');
-        safeSetState(setAuthInitialized, true);
-      }
-    };
-
     const getInitialSession = async () => {
       try {
         console.log('🔄 Getting initial session...');
-        
-        // Set a timeout to prevent infinite loading
-        authTimeout = setTimeout(handleAuthTimeout, 10000); // 10 second timeout
         
         const { data: { session }, error } = await supabase.auth.getSession();
         

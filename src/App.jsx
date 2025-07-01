@@ -41,18 +41,98 @@ function App() {
     return () => subscription.unsubscribe();
   }, []);
 
-  const getSession = async () => {
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session?.user) {
+// Replace your useEffect hook around line 41 with this:
+useEffect(() => {
+  const subscription = supabase.auth.onAuthStateChange(async (event, session) => {
+    console.log('Auth state changed:', event, session); // Add logging
+    
+    if (session?.user) {
+      try {
+        setLoading(true);
         await getProfile(session.user.id);
+        setCurrentUser(session.user);
+        setCurrentView('media');
+      } catch (error) {
+        console.error('Error loading profile:', error);
+        // Don't break the flow - set user anyway
+        setCurrentUser(session.user);
+        setCurrentView('media');
+      }
+    } else {
+      setCurrentUser(null);
+      setCurrentView('login');
+    }
+    setLoading(false);
+  });
+
+  // Initial session check
+  const getInitialSession = async () => {
+    try {
+      setLoading(true);
+      const { data: { session }, error } = await supabase.auth.getSession();
+      
+      if (error) {
+        console.error('Error getting session:', error);
+        setCurrentView('login');
+        return;
+      }
+
+      if (session?.user) {
+        try {
+          await getProfile(session.user.id);
+          setCurrentUser(session.user);
+          setCurrentView('media');
+        } catch (profileError) {
+          console.error('Error loading profile:', profileError);
+          // Still set the user even if profile fails
+          setCurrentUser(session.user);
+          setCurrentView('media');
+        }
+      } else {
+        setCurrentView('login');
       }
     } catch (error) {
-      console.error('Error getting session:', error);
+      console.error('Session check failed:', error);
+      setCurrentView('login');
     } finally {
       setLoading(false);
     }
   };
+
+  getInitialSession();
+
+  return () => subscription.unsubscribe();
+}, []);
+
+// Also update your getProfile function around line 57:
+const getProfile = async (userId) => {
+  try {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('id', userId)
+      .single();
+
+    if (error) {
+      console.error('Profile fetch error:', error);
+      throw error;
+    }
+
+    if (data) {
+      setProfile(data);
+      console.log('Profile loaded:', data); // Add logging
+    }
+  } catch (error) {
+    console.error('Error in getProfile:', error);
+    throw error; // Re-throw so calling code can handle it
+  }
+};
+
+// Make sure you're not accessing .length on potentially undefined arrays
+// Check anywhere in your code where you use .length - add safety checks like:
+// Instead of: someArray.length
+// Use: someArray?.length || 0
+// Or: (someArray || []).length
 
   const getProfile = async (userId) => {
     try {

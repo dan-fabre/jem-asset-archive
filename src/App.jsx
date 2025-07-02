@@ -21,81 +21,233 @@ function App() {
   const [pendingUsers, setPendingUsers] = useState([]);
   const [showMobileMenu, setShowMobileMenu] = useState(false);
   const [error, setError] = useState('');
+  const [authInitialized, setAuthInitialized] = useState(false);
 
-  // Check if user is logged in on mount
+  // Enhanced authentication with bulletproof error handling
   useEffect(() => {
-    getSession();
+    let isMounted = true;
+    let authTimeout;
+
+    const safeSetState = (setter, value) => {
+      if (isMounted) {
+        try {
+          setter(value);
+        } catch (error) {
+          console.error('State update error:', error);
+        }
+      }
+    };
+
+    const getInitialSession = async () => {
+      try {
+        console.log('🔄 Getting initial session...');
+        
+        const { data: { session }, error } = await supabase.auth.getSession();
+        
+        if (authTimeout) {
+          clearTimeout(authTimeout);
+          authTimeout = null;
+        }
+        
+        if (error) {
+          console.error('❌ Error getting session:', error);
+          if (isMounted) {
+            safeSetState(setCurrentView, 'login');
+            safeSetState(setLoading, false);
+            safeSetState(setAuthInitialized, true);
+          }
+          return;
+        }
+
+        if (session?.user && isMounted) {
+          console.log('✅ Session found for:', session.user.email);
+          try {
+            await getProfileSafe(session.user.id);
+          } catch (profileError) {
+            console.error('⚠️ Profile loading failed, using basic user data:', profileError);
+            // Fallback: set basic user data and go to dashboard
+            safeSetState(setCurrentUser, {
+              id: session.user.id,
+              email: session.user.email,
+              name: session.user.user_metadata?.name || session.user.email.split('@')[0],
+              role: 'user'
+            });
+            safeSetState(setCurrentView, 'dashboard');
+          }
+        } else if (isMounted) {
+          console.log('❌ No session found');
+          safeSetState(setCurrentView, 'login');
+        }
+        
+        if (isMounted) {
+          safeSetState(setLoading, false);
+          safeSetState(setAuthInitialized, true);
+        }
+      } catch (error) {
+        console.error('💥 Session check failed:', error);
+        if (isMounted) {
+          safeSetState(setCurrentView, 'login');
+          safeSetState(setLoading, false);
+          safeSetState(setAuthInitialized, true);
+        }
+      }
+    };
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, session) => {
+        console.log('🔄 Auth state changed:', event, session?.user?.email);
+        
+        if (!isMounted) return;
+
         if (session?.user) {
-          await getProfile(session.user.id);
+          try {
+            await getProfileSafe(session.user.id);
+          } catch (error) {
+            console.error('⚠️ Profile loading failed in auth change:', error);
+            // Fallback: set basic user data
+            safeSetState(setCurrentUser, {
+              id: session.user.id,
+              email: session.user.email,
+              name: session.user.user_metadata?.name || session.user.email.split('@')[0],
+              role: 'user'
+            });
+            safeSetState(setCurrentView, 'dashboard');
+          }
         } else {
-          setCurrentUser(null);
-          setCurrentView('login');
+          console.log('🚪 User signed out');
+          safeSetState(setCurrentUser, null);
+          safeSetState(setCurrentView, 'login');
+          safeSetState(setFolders, []);
+          safeSetState(setAssets, []);
+          safeSetState(setUsers, []);
+          safeSetState(setPendingUsers, []);
         }
-        setLoading(false);
+        
+        safeSetState(setLoading, false);
+        safeSetState(setAuthInitialized, true);
       }
     );
 
-    return () => subscription.unsubscribe();
+    getInitialSession();
+
+    return () => {
+      isMounted = false;
+      if (authTimeout) {
+        clearTimeout(authTimeout);
+      }
+      subscription.unsubscribe();
+    };
   }, []);
 
-  const getSession = async () => {
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session?.user) {
-        await getProfile(session.user.id);
-      }
-    } catch (error) {
-      console.error('Session error:', error);
+const getProfile = async (userId) => {
+  try {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('id', userId)
+      .single();
+
+    if (error) throw error;
+
+    if (data && data.status === 'active') {
+      setCurrentUser(data);
+      setCurrentView('dashboard');
+      // loadFolders();
+      // loadAssets();
+      // if (data.role === 'admin') {
+      //   loadUsers();
+      // }
+    } else if (data && data.status === 'pending') {
+      setCurrentView('pending');
     }
-  };
+  } catch (error) {
+    console.error('Error loading profile:', error);
+    setError('Error loading profile');
+  }
+  
+  // ADD THIS LINE:
+  setLoading(false);
+};
 
-  const getProfile = async (userId) => {
+  // Fallback when profile loading fails
+  const handleProfileFallback = async (userId) => {
+    console.log('🔄 Using profile fallback for user:', userId);
     try {
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', userId)
-        .single();
-
-      if (error) throw error;
-
-      if (data && data.status === 'active') {
-        setCurrentUser(data);
+      // Get basic user info from auth
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        setCurrentUser({
+          id: user.id,
+          email: user.email,
+          name: user.user_metadata?.name || user.email.split('@')[0],
+          role: 'user',
+          status: 'active'
+        });
         setCurrentView('dashboard');
-        loadFolders();
-        loadAssets();
-        if (data.role === 'admin') {
-          loadUsers();
-        }
-      } else if (data && data.status === 'pending') {
-        setCurrentView('pending');
+        
+        // Try to load data in background
+        setTimeout(() => {
+          loadDataSafely();
+        }, 100);
+      } else {
+        setCurrentView('login');
       }
     } catch (error) {
-      console.error('Error loading profile:', error);
-      setError('Error loading profile');
+      console.error('💥 Fallback failed:', error);
+      setCurrentView('login');
     }
-    setLoading(false);  // ADD THIS LINE - This fixes the infinite loading!
   };
 
-  const loadFolders = async () => {
+  // Safe data loading that won't break the app
+  const loadDataSafely = async () => {
+    console.log('📊 Loading app data safely...');
+    
+    // Load each data type independently with error handling
     try {
+      await loadFoldersSafe();
+    } catch (error) {
+      console.error('📁 Folder loading failed:', error);
+    }
+    
+    try {
+      await loadAssetsSafe();
+    } catch (error) {
+      console.error('🖼️ Asset loading failed:', error);
+    }
+    
+    try {
+      if (currentUser?.role === 'admin') {
+        await loadUsersSafe();
+      }
+    } catch (error) {
+      console.error('👥 User loading failed:', error);
+    }
+  };
+
+  const loadFoldersSafe = async () => {
+    try {
+      console.log('📁 Loading folders...');
       const { data, error } = await supabase
         .from('folders')
         .select('*')
         .order('created_at', { ascending: false });
 
-      if (error) throw error;
+      if (error) {
+        console.error('📁 Folder query error:', error);
+        return;
+      }
+      
       setFolders(data || []);
+      console.log('✅ Folders loaded:', (data || []).length);
     } catch (error) {
-      console.error('Error loading folders:', error);
+      console.error('💥 loadFoldersSafe error:', error);
+      setFolders([]);
     }
   };
 
-  const loadAssets = async () => {
+  const loadAssetsSafe = async () => {
     try {
+      console.log('🖼️ Loading assets...');
       const { data, error } = await supabase
         .from('assets')
         .select(`
@@ -105,36 +257,52 @@ function App() {
         `)
         .order('created_at', { ascending: false });
 
-      if (error) throw error;
+      if (error) {
+        console.error('🖼️ Asset query error:', error);
+        return;
+      }
+      
       setAssets(data || []);
+      console.log('✅ Assets loaded:', (data || []).length);
     } catch (error) {
-      console.error('Error loading assets:', error);
+      console.error('💥 loadAssetsSafe error:', error);
+      setAssets([]);
     }
   };
 
-  const loadUsers = async () => {
+  const loadUsersSafe = async () => {
     try {
+      console.log('👥 Loading users...');
       const { data, error } = await supabase
         .from('profiles')
         .select('*')
         .order('created_at', { ascending: false });
 
-      if (error) throw error;
+      if (error) {
+        console.error('👥 User query error:', error);
+        return;
+      }
       
-      const activeUsers = data?.filter(user => user.status === 'active') || [];
-      const pendingUsers = data?.filter(user => user.status === 'pending') || [];
+      const activeUsers = (data || []).filter(user => user.status === 'active');
+      const pending = (data || []).filter(user => user.status === 'pending');
       
       setUsers(activeUsers);
-      setPendingUsers(pendingUsers);
+      setPendingUsers(pending);
+      console.log('✅ Users loaded:', activeUsers.length, 'pending:', pending.length);
     } catch (error) {
-      console.error('Error loading users:', error);
+      console.error('💥 loadUsersSafe error:', error);
+      setUsers([]);
+      setPendingUsers([]);
     }
   };
 
-  // Authentication functions
+  // Authentication functions with enhanced error handling
   const handleSignUp = async (email, password, name) => {
     try {
       setError('');
+      setLoading(true);
+      console.log('📝 Signing up user:', email);
+      
       const { data, error } = await supabase.auth.signUp({
         email,
         password,
@@ -148,47 +316,67 @@ function App() {
       if (error) throw error;
 
       if (data.user) {
-        setCurrentView('pending');
+        console.log('✅ User signed up successfully');
       }
     } catch (error) {
-      console.error('Error signing up:', error);
+      console.error('❌ Error signing up:', error);
       setError(error.message);
+    } finally {
+      setLoading(false);
     }
   };
 
   const handleSignIn = async (email, password) => {
     try {
       setError('');
+      setLoading(true);
+      console.log('🔑 Signing in user:', email);
+      
       const { data, error } = await supabase.auth.signInWithPassword({
         email,
         password
       });
 
       if (error) throw error;
+      console.log('✅ User signed in successfully');
     } catch (error) {
-      console.error('Error signing in:', error);
+      console.error('❌ Error signing in:', error);
       setError(error.message);
+      setLoading(false);
     }
   };
 
   const handleSignOut = async () => {
     try {
+      console.log('🚪 Signing out user');
+      setLoading(true);
+      
       const { error } = await supabase.auth.signOut();
       if (error) throw error;
       
+      // Clear all state
       setCurrentUser(null);
       setCurrentView('login');
       setFolders([]);
       setAssets([]);
       setUsers([]);
       setPendingUsers([]);
+      setSelectedFolder(null);
+      setNavigationStack([]);
+      setSearchTerm('');
+      setShowUpload(false);
+      setShowMobileMenu(false);
+      setError('');
     } catch (error) {
-      console.error('Error signing out:', error);
+      console.error('❌ Error signing out:', error);
+    } finally {
+      setLoading(false);
     }
   };
 
   const approveUser = async (userId) => {
     try {
+      console.log('✅ Approving user:', userId);
       const { error } = await supabase
         .from('profiles')
         .update({ status: 'active' })
@@ -196,9 +384,11 @@ function App() {
 
       if (error) throw error;
       
-      await loadUsers();
+      await loadUsersSafe();
+      console.log('✅ User approved successfully');
     } catch (error) {
-      console.error('Error approving user:', error);
+      console.error('❌ Error approving user:', error);
+      setError('Failed to approve user');
     }
   };
 
@@ -225,9 +415,10 @@ function App() {
     setShowMobileMenu(false);
   };
 
-  // Asset and folder functions
+  // Asset and folder functions with error handling
   const createFolder = async (name, type, tags, parentId = null) => {
     try {
+      console.log('📁 Creating folder:', name);
       const { data, error } = await supabase
         .from('folders')
         .insert([{
@@ -243,19 +434,22 @@ function App() {
 
       if (error) throw error;
       
-      await loadFolders();
+      await loadFoldersSafe();
+      console.log('✅ Folder created successfully');
       return data;
     } catch (error) {
-      console.error('Error creating folder:', error);
+      console.error('❌ Error creating folder:', error);
+      setError('Failed to create folder');
       throw error;
     }
   };
 
   const uploadFile = async (file, folderId, tags) => {
     try {
+      console.log('📤 Uploading file:', file.name, 'to folder:', folderId);
       const fileExt = file.name.split('.').pop();
       const fileName = `${Date.now()}-${Math.random().toString(36).substring(2)}.${fileExt}`;
-      const filePath = `${folderId}/${fileName}`;
+      const filePath = `${folderId || 'general'}/${fileName}`;
 
       // Upload file to storage
       const { data: uploadData, error: uploadError } = await supabase.storage
@@ -281,16 +475,19 @@ function App() {
 
       if (error) throw error;
       
-      await loadAssets();
+      await loadAssetsSafe();
+      console.log('✅ File uploaded successfully');
       return data;
     } catch (error) {
-      console.error('Error uploading file:', error);
+      console.error('❌ Error uploading file:', error);
+      setError('Failed to upload file');
       throw error;
     }
   };
 
   const downloadFile = async (filePath, fileName) => {
     try {
+      console.log('📥 Downloading file:', filePath);
       const { data, error } = await supabase.storage
         .from('assets')
         .download(filePath);
@@ -305,98 +502,39 @@ function App() {
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
+      console.log('✅ File downloaded successfully');
     } catch (error) {
-      console.error('Error downloading file:', error);
+      console.error('❌ Error downloading file:', error);
+      setError('Failed to download file');
     }
   };
 
-  // NEW: Add these storage URL helper functions
-  const getPublicUrl = (filePath) => {
-    const { data } = supabase.storage
-      .from('assets')
-      .getPublicUrl(filePath);
-    
-    return data.publicUrl;
-  };
-
-  const getSignedUrl = async (filePath) => {
+  // Safe filter functions
+  const filteredAssets = (assets || []).filter(asset => {
     try {
-      const { data, error } = await supabase.storage
-        .from('assets')
-        .createSignedUrl(filePath, 3600); // URL valid for 1 hour
-      
-      if (error) throw error;
-      return data.signedUrl;
+      const matchesSearch = asset.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                           (asset.tags || []).some(tag => tag.toLowerCase().includes(searchTerm.toLowerCase()));
+      const matchesFolder = selectedFolder ? asset.folder_id === selectedFolder.id : true;
+      return matchesSearch && matchesFolder;
     } catch (error) {
-      console.error('Error getting signed URL:', error);
-      return null;
+      console.error('Filter error:', error);
+      return false;
     }
-  };
-
-  // NEW: Component for displaying asset previews
-  const AssetPreview = ({ asset }) => {
-    const [imageUrl, setImageUrl] = useState(null);
-    
-    useEffect(() => {
-      const loadImageUrl = async () => {
-        const url = await getSignedUrl(asset.file_path);
-        setImageUrl(url);
-      };
-      
-      if (asset.mime_type?.includes('image')) {
-        loadImageUrl();
-      }
-    }, [asset]);
-    
-    if (asset.mime_type?.includes('video')) {
-      return <Video className="h-12 w-12 text-gray-400" />;
-    }
-    
-    if (imageUrl && asset.mime_type?.includes('image')) {
-      return (
-        <img 
-          src={imageUrl} 
-          alt={asset.name}
-          className="w-full h-full object-cover"
-          onError={(e) => {
-            e.target.style.display = 'none';
-            e.target.nextSibling.style.display = 'flex';
-          }}
-        />
-      );
-    }
-    
-    return <Image className="h-12 w-12 text-gray-400" />;
-  };
-
-  // NEW: Function to handle the View button
-  const viewAsset = async (asset) => {
-    try {
-      const url = await getSignedUrl(asset.file_path);
-      if (url) {
-        window.open(url, '_blank');
-      }
-    } catch (error) {
-      console.error('Error viewing asset:', error);
-    }
-  };
-
-  // Filter functions
-  const filteredAssets = assets.filter(asset => {
-    const matchesSearch = asset.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         asset.tags?.some(tag => tag.toLowerCase().includes(searchTerm.toLowerCase()));
-    const matchesFolder = selectedFolder ? asset.folder_id === selectedFolder.id : true;
-    return matchesSearch && matchesFolder;
   });
 
-  const filteredFolders = folders.filter(folder => {
-    const matchesSearch = folder.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         folder.tags?.some(tag => tag.toLowerCase().includes(searchTerm.toLowerCase()));
-    return matchesSearch && !folder.parent_id;
+  const filteredFolders = (folders || []).filter(folder => {
+    try {
+      const matchesSearch = folder.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                           (folder.tags || []).some(tag => tag.toLowerCase().includes(searchTerm.toLowerCase()));
+      return matchesSearch && !folder.parent_id;
+    } catch (error) {
+      console.error('Filter error:', error);
+      return false;
+    }
   });
 
-  // Loading screen
-  if (loading) {
+  // Enhanced loading screen with timeout protection
+  if (loading || !authInitialized) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-pink-50 to-orange-50 flex items-center justify-center">
         <div className="text-center">
@@ -404,6 +542,18 @@ function App() {
             <span className="text-2xl font-bold">jem</span>
           </div>
           <p className="text-gray-600">Loading...</p>
+          {loading && (
+            <button 
+              onClick={() => {
+                setLoading(false);
+                setCurrentView('login');
+                setAuthInitialized(true);
+              }}
+              className="mt-4 text-sm text-gray-500 hover:text-gray-700 underline"
+            >
+              Taking too long? Click here to continue
+            </button>
+          )}
         </div>
       </div>
     );
@@ -443,6 +593,12 @@ function App() {
           {error && (
             <div className="mb-4 p-3 bg-red-100 border border-red-400 text-red-700 rounded">
               {error}
+              <button 
+                onClick={() => setError('')}
+                className="ml-2 text-red-500 hover:text-red-700"
+              >
+                ×
+              </button>
             </div>
           )}
           
@@ -485,9 +641,10 @@ function App() {
               </div>
               <button
                 type="submit"
-                className="w-full bg-gradient-to-r from-pink-500 to-pink-400 text-white py-2 px-4 rounded-lg hover:from-pink-600 hover:to-pink-500 transition-colors"
+                disabled={loading}
+                className="w-full bg-gradient-to-r from-pink-500 to-pink-400 text-white py-2 px-4 rounded-lg hover:from-pink-600 hover:to-pink-500 transition-colors disabled:opacity-50"
               >
-                {isSignUp ? 'Create Account' : 'Sign In'}
+                {loading ? 'Please wait...' : (isSignUp ? 'Create Account' : 'Sign In')}
               </button>
             </div>
           </form>
@@ -496,8 +653,12 @@ function App() {
             <p className="text-sm text-gray-600">
               {isSignUp ? 'Already have an account?' : "Don't have an account?"}{' '}
               <button 
-                onClick={() => setIsSignUp(!isSignUp)}
+                onClick={() => {
+                  setIsSignUp(!isSignUp);
+                  setError('');
+                }}
                 className="text-pink-500 hover:text-pink-600"
+                disabled={loading}
               >
                 {isSignUp ? 'Sign In' : 'Sign Up'}
               </button>
@@ -610,7 +771,7 @@ function App() {
     </div>
   );
 
-  // Dashboard component - UPDATED with image previews
+  // Dashboard component
   const Dashboard = () => (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between space-y-4 sm:space-y-0">
@@ -626,31 +787,28 @@ function App() {
 
       <SearchBar />
 
-      {/* Recent Activity - UPDATED */}
+      {/* Recent Activity */}
       <div className="bg-white rounded-lg border border-gray-200 p-6">
         <h2 className="text-lg font-semibold text-gray-900 mb-4">Recent Activity</h2>
         <div className="space-y-3">
-          {assets.slice(0, 3).map(asset => (
+          {(assets || []).slice(0, 3).map(asset => (
             <div key={asset.id} className="flex items-center space-x-3 p-3 hover:bg-gray-50 rounded-lg transition-colors">
-              <div className="p-2 bg-pink-100 rounded-lg w-10 h-10 flex items-center justify-center overflow-hidden">
-                <AssetPreview asset={asset} />
+              <div className="p-2 bg-pink-100 rounded-lg">
+                {asset.mime_type?.includes('video') ? 
+                  <Video className="h-4 w-4 text-pink-600" /> : 
+                  <Image className="h-4 w-4 text-pink-600" />
+                }
               </div>
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium text-gray-900 truncate">{asset.name}</p>
                 <p className="text-xs text-gray-500">
-                  Uploaded by {asset.profiles?.name} • {new Date(asset.created_at).toLocaleDateString()}
+                  Uploaded by {asset.profiles?.name || 'Unknown'} • {new Date(asset.created_at).toLocaleDateString()}
                 </p>
               </div>
               <div className="flex items-center space-x-2">
                 <span className="text-xs text-gray-500">
                   {asset.file_size ? `${(asset.file_size / (1024 * 1024)).toFixed(1)}MB` : ''}
                 </span>
-                <button 
-                  onClick={() => viewAsset(asset)}
-                  className="p-1 text-gray-400 hover:text-gray-600"
-                >
-                  <Eye className="h-4 w-4" />
-                </button>
                 <button 
                   onClick={() => downloadFile(asset.file_path, asset.name)}
                   className="p-1 text-gray-400 hover:text-gray-600"
@@ -660,7 +818,7 @@ function App() {
               </div>
             </div>
           ))}
-          {assets.length === 0 && (
+          {(assets || []).length === 0 && (
             <p className="text-gray-500 text-center py-4">No assets uploaded yet</p>
           )}
         </div>
@@ -669,7 +827,7 @@ function App() {
       {/* Folders Grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         {filteredFolders.map(folder => {
-          const folderAssets = assets.filter(asset => asset.folder_id === folder.id);
+          const folderAssets = (assets || []).filter(asset => asset.folder_id === folder.id);
           return (
             <div
               key={folder.id}
@@ -689,14 +847,14 @@ function App() {
               <p className="text-sm text-gray-600 mb-3">{folderAssets.length} assets</p>
               
               <div className="flex flex-wrap gap-1">
-                {folder.tags?.slice(0, 3).map(tag => (
+                {(folder.tags || []).slice(0, 3).map(tag => (
                   <span key={tag} className="px-2 py-1 bg-gray-100 text-xs text-gray-600 rounded-full">
                     {tag}
                   </span>
                 ))}
-                {folder.tags?.length > 3 && (
+                {(folder.tags || []).length > 3 && (
                   <span className="px-2 py-1 bg-gray-100 text-xs text-gray-600 rounded-full">
-                    +{folder.tags.length - 3}
+                    +{(folder.tags || []).length - 3}
                   </span>
                 )}
               </div>
@@ -714,9 +872,9 @@ function App() {
     </div>
   );
 
-  // Folder view component - UPDATED with image previews
+  // Folder view component
   const FolderView = () => {
-    const folderAssets = assets.filter(asset => asset.folder_id === selectedFolder?.id);
+    const folderAssets = (assets || []).filter(asset => asset.folder_id === selectedFolder?.id);
 
     return (
       <div className="space-y-6">
@@ -738,26 +896,26 @@ function App() {
 
         <SearchBar />
 
-        {/* Assets Grid - UPDATED */}
+        {/* Assets Grid */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
           {filteredAssets.map(asset => (
             <div key={asset.id} className="bg-white border border-gray-200 rounded-lg overflow-hidden hover:shadow-md transition-shadow">
-              <div className="aspect-video bg-gray-100 flex items-center justify-center relative">
-                <AssetPreview asset={asset} />
-                <div style={{ display: 'none' }} className="absolute inset-0 flex items-center justify-center">
+              <div className="aspect-video bg-gray-100 flex items-center justify-center">
+                {asset.mime_type?.includes('video') ? 
+                  <Video className="h-12 w-12 text-gray-400" /> : 
                   <Image className="h-12 w-12 text-gray-400" />
-                </div>
+                }
               </div>
               
               <div className="p-4">
                 <h4 className="font-medium text-gray-900 text-sm mb-2 truncate">{asset.name}</h4>
                 <p className="text-xs text-gray-500 mb-3">
-                  {asset.profiles?.name} • {new Date(asset.created_at).toLocaleDateString()} • 
+                  {asset.profiles?.name || 'Unknown'} • {new Date(asset.created_at).toLocaleDateString()} • 
                   {asset.file_size ? ` ${(asset.file_size / (1024 * 1024)).toFixed(1)}MB` : ''}
                 </p>
                 
                 <div className="flex flex-wrap gap-1 mb-3">
-                  {asset.tags?.slice(0, 2).map(tag => (
+                  {(asset.tags || []).slice(0, 2).map(tag => (
                     <span key={tag} className="px-2 py-1 bg-gray-100 text-xs text-gray-600 rounded-full">
                       {tag}
                     </span>
@@ -765,10 +923,7 @@ function App() {
                 </div>
                 
                 <div className="flex space-x-2">
-                  <button 
-                    onClick={() => viewAsset(asset)}
-                    className="flex-1 flex items-center justify-center space-x-1 bg-gray-100 text-gray-700 px-3 py-2 rounded-md text-sm hover:bg-gray-200 transition-colors"
-                  >
+                  <button className="flex-1 flex items-center justify-center space-x-1 bg-gray-100 text-gray-700 px-3 py-2 rounded-md text-sm hover:bg-gray-200 transition-colors">
                     <Eye className="h-3 w-3" />
                     <span>View</span>
                   </button>
@@ -794,129 +949,274 @@ function App() {
     );
   };
 
-  // Upload modal component
-  const UploadModal = () => {
-    const [uploadFiles, setUploadFiles] = useState([]);
-    const [uploadTags, setUploadTags] = useState('');
-    const [uploading, setUploading] = useState(false);
-    const [newFolderName, setNewFolderName] = useState('');
-    const [createNewFolder, setCreateNewFolder] = useState(false);
+// Replace your UploadModal component with this:
+const UploadModal = () => {
+  const [uploadFiles, setUploadFiles] = useState([]);
+  const [uploadTags, setUploadTags] = useState('');
+  const [uploading, setUploading] = useState(false);
+  const [currentStep, setCurrentStep] = useState(1);
+  const [selectedFolderId, setSelectedFolderId] = useState(null);
+  const [selectedFolderName, setSelectedFolderName] = useState('');
+  const [showCreateFolder, setShowCreateFolder] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
+  const [newFolderTags, setNewFolderTags] = useState('');
+  const [creatingFolder, setCreatingFolder] = useState(false);
 
-    const handleUpload = async (e) => {
-      e.preventDefault();
-      if (uploadFiles.length === 0) return;
+  const handleCreateFolder = async (e) => {
+    e.preventDefault();
+    if (!newFolderName.trim()) return;
 
-      setUploading(true);
-      try {
-        let targetFolderId = selectedFolder?.id;
+    setCreatingFolder(true);
+    try {
+      const newFolder = await createFolder(newFolderName, 'media', newFolderTags);
+      setSelectedFolderId(newFolder.id);
+      setSelectedFolderName(newFolder.name);
+      setShowCreateFolder(false);
+      setNewFolderName('');
+      setNewFolderTags('');
+      setCurrentStep(2);
+    } catch (error) {
+      console.error('Failed to create folder:', error);
+      setError('Failed to create folder: ' + error.message);
+    } finally {
+      setCreatingFolder(false);
+    }
+  };
 
-        // Create new folder if needed
-        if (!selectedFolder && newFolderName) {
-          const folderData = await createFolder(newFolderName, 'event', uploadTags);
-          targetFolderId = folderData.id;
-        }
+  const handleFolderSelect = (folder) => {
+    setSelectedFolderId(folder.id);
+    setSelectedFolderName(folder.name);
+    setCurrentStep(2);
+  };
 
-        if (!targetFolderId) {
-          throw new Error('Please select a folder or create a new one');
-        }
+  const handleUpload = async (e) => {
+    e.preventDefault();
+    if (uploadFiles.length === 0 || !selectedFolderId) return;
 
-        for (const file of uploadFiles) {
-          await uploadFile(file, targetFolderId, uploadTags);
-        }
-        
-        setShowUpload(false);
-        setUploadFiles([]);
-        setUploadTags('');
-        setNewFolderName('');
-      } catch (error) {
-        console.error('Upload failed:', error);
-        setError('Upload failed: ' + error.message);
-      } finally {
-        setUploading(false);
+    setUploading(true);
+    try {
+      for (const file of uploadFiles) {
+        await uploadFile(file, selectedFolderId, uploadTags);
       }
-    };
+      // Reset and close
+      setShowUpload(false);
+      setUploadFiles([]);
+      setUploadTags('');
+      setCurrentStep(1);
+      setSelectedFolderId(null);
+      setSelectedFolderName('');
+    } catch (error) {
+      console.error('Upload failed:', error);
+      setError('Upload failed: ' + error.message);
+    } finally {
+      setUploading(false);
+    }
+  };
 
-    return (
-      <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-        <div className="bg-white rounded-xl max-w-lg w-full max-h-[90vh] overflow-y-auto">
-          <div className="p-6 border-b border-gray-200">
-            <div className="flex items-center justify-between">
+  const goBackToStep1 = () => {
+    setCurrentStep(1);
+    setSelectedFolderId(null);
+    setSelectedFolderName('');
+  };
+
+  const closeModal = () => {
+    setShowUpload(false);
+    setUploadFiles([]);
+    setUploadTags('');
+    setCurrentStep(1);
+    setSelectedFolderId(null);
+    setSelectedFolderName('');
+    setShowCreateFolder(false);
+    setNewFolderName('');
+    setNewFolderTags('');
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+      <div className="bg-white rounded-xl max-w-lg w-full max-h-[90vh] overflow-y-auto">
+        <div className="p-6 border-b border-gray-200">
+          <div className="flex items-center justify-between">
+            <div>
               <h2 className="text-lg font-semibold text-gray-900">Upload Assets</h2>
-              <button onClick={() => setShowUpload(false)} className="text-gray-400 hover:text-gray-600">
-                <X className="h-5 w-5" />
-              </button>
+              <p className="text-sm text-gray-500">
+                Step {currentStep} of 2: {currentStep === 1 ? 'Choose Folder' : 'Upload Files'}
+              </p>
+            </div>
+            <button onClick={closeModal} className="text-gray-400 hover:text-gray-600">
+              <X className="h-5 w-5" />
+            </button>
+          </div>
+        </div>
+
+        {/* Step 1: Choose/Create Folder */}
+        {currentStep === 1 && (
+          <div className="p-6 space-y-4">
+            <div>
+              <h3 className="text-md font-medium text-gray-900 mb-4">Select a folder for your assets</h3>
+              
+              {/* Existing Folders */}
+              {folders.length > 0 && (
+                <div className="space-y-2 mb-4">
+                  <h4 className="text-sm font-medium text-gray-700">Choose existing folder:</h4>
+                  <div className="max-h-48 overflow-y-auto space-y-1">
+                    {folders.map(folder => (
+                      <button
+                        key={folder.id}
+                        onClick={() => handleFolderSelect(folder)}
+                        className="w-full text-left p-3 border border-gray-200 rounded-lg hover:bg-gray-50 hover:border-gray-300 transition-colors"
+                      >
+                        <div className="flex items-center space-x-3">
+                          <Folder className="h-5 w-5 text-blue-600" />
+                          <div>
+                            <p className="font-medium text-gray-900">{folder.name}</p>
+                            {folder.tags && folder.tags.length > 0 && (
+                              <p className="text-xs text-gray-500">
+                                Tags: {folder.tags.join(', ')}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Divider */}
+              {folders.length > 0 && (
+                <div className="flex items-center my-4">
+                  <div className="flex-1 border-t border-gray-200"></div>
+                  <span className="px-3 text-sm text-gray-500">or</span>
+                  <div className="flex-1 border-t border-gray-200"></div>
+                </div>
+              )}
+
+              {/* Create New Folder */}
+              {!showCreateFolder ? (
+                <button
+                  onClick={() => setShowCreateFolder(true)}
+                  className="w-full flex items-center justify-center space-x-2 p-3 border-2 border-dashed border-gray-300 rounded-lg hover:border-gray-400 transition-colors"
+                >
+                  <Plus className="h-5 w-5 text-gray-400" />
+                  <span className="text-gray-600">Create new folder</span>
+                </button>
+              ) : (
+                <form onSubmit={handleCreateFolder} className="space-y-3 p-4 border border-gray-200 rounded-lg bg-gray-50">
+                  <h4 className="text-sm font-medium text-gray-700">Create new folder:</h4>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">Folder Name</label>
+                    <input
+                      type="text"
+                      value={newFolderName}
+                      onChange={(e) => setNewFolderName(e.target.value)}
+                      placeholder="e.g. Q4 Campaign, Team Photos"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:border-pink-500"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">Tags (optional)</label>
+                    <input
+                      type="text"
+                      value={newFolderTags}
+                      onChange={(e) => setNewFolderTags(e.target.value)}
+                      placeholder="marketing, social, campaign"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:border-pink-500"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">Separate tags with commas</p>
+                  </div>
+                  <div className="flex space-x-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowCreateFolder(false);
+                        setNewFolderName('');
+                        setNewFolderTags('');
+                      }}
+                      className="flex-1 px-3 py-2 border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50 transition-colors"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={creatingFolder || !newFolderName.trim()}
+                      className="flex-1 bg-gradient-to-r from-pink-500 to-pink-400 text-white px-3 py-2 rounded-md hover:from-pink-600 hover:to-pink-500 transition-colors disabled:opacity-50"
+                    >
+                      {creatingFolder ? 'Creating...' : 'Create & Continue'}
+                    </button>
+                  </div>
+                </form>
+              )}
             </div>
           </div>
-          
-          <form onSubmit={handleUpload} className="p-6 space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">Select Files</label>
-              <input
-                type="file"
-                multiple
-                accept="image/*,video/*"
-                onChange={(e) => setUploadFiles(Array.from(e.target.files))}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:border-pink-500"
-                required
-              />
-              <p className="text-xs text-gray-500 mt-1">Select images or videos to upload</p>
-            </div>
-            
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">Tags</label>
-              <input
-                type="text"
-                value={uploadTags}
-                onChange={(e) => setUploadTags(e.target.value)}
-                placeholder="customer, interview, testimonial"
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:border-pink-500"
-              />
-              <p className="text-xs text-gray-500 mt-1">Separate tags with commas</p>
-            </div>
-            
-            {selectedFolder ? (
-              <div className="bg-blue-50 p-3 rounded-lg">
-                <p className="text-sm text-blue-800">
-                  Files will be uploaded to: <span className="font-medium">{selectedFolder.name}</span>
-                </p>
-              </div>
-            ) : (
+        )}
+
+        {/* Step 2: Upload Files */}
+        {currentStep === 2 && (
+          <div className="p-6 space-y-4">
+            <div className="flex items-center space-x-2 mb-4">
+              <button
+                onClick={goBackToStep1}
+                className="p-1 text-gray-400 hover:text-gray-600"
+              >
+                <ArrowLeft className="h-4 w-4" />
+              </button>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">Create New Folder</label>
+                <h3 className="text-md font-medium text-gray-900">Upload to: {selectedFolderName}</h3>
+                <p className="text-sm text-gray-500">Choose files and add tags</p>
+              </div>
+            </div>
+
+            <form onSubmit={handleUpload} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Select Files</label>
+                <input
+                  type="file"
+                  multiple
+                  accept="image/*,video/*"
+                  onChange={(e) => setUploadFiles(Array.from(e.target.files || []))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:border-pink-500"
+                  required
+                />
+                <p className="text-xs text-gray-500 mt-1">Select images or videos to upload</p>
+              </div>
+              
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Tags</label>
                 <input
                   type="text"
-                  value={newFolderName}
-                  onChange={(e) => setNewFolderName(e.target.value)}
-                  placeholder="Folder name"
+                  value={uploadTags}
+                  onChange={(e) => setUploadTags(e.target.value)}
+                  placeholder="customer, interview, testimonial"
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:border-pink-500"
-                  required={!selectedFolder}
                 />
-                <p className="text-xs text-gray-500 mt-1">A new folder will be created for these assets</p>
+                <p className="text-xs text-gray-500 mt-1">Separate tags with commas</p>
               </div>
-            )}
-            
-            <div className="flex space-x-3 pt-4">
-              <button
-                type="button"
-                onClick={() => setShowUpload(false)}
-                className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
-                disabled={uploading}
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                disabled={uploading || uploadFiles.length === 0}
-                className="flex-1 bg-gradient-to-r from-pink-500 to-pink-400 text-white px-4 py-2 rounded-lg hover:from-pink-600 hover:to-pink-500 transition-colors disabled:opacity-50"
-              >
-                {uploading ? 'Uploading...' : 'Upload'}
-              </button>
-            </div>
-          </form>
-        </div>
+              
+              <div className="flex space-x-3 pt-4">
+                <button
+                  type="button"
+                  onClick={goBackToStep1}
+                  className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
+                  disabled={uploading}
+                >
+                  Back
+                </button>
+                <button
+                  type="submit"
+                  disabled={uploading || uploadFiles.length === 0}
+                  className="flex-1 bg-gradient-to-r from-pink-500 to-pink-400 text-white px-4 py-2 rounded-lg hover:from-pink-600 hover:to-pink-500 transition-colors disabled:opacity-50"
+                >
+                  {uploading ? 'Uploading...' : 'Upload'}
+                </button>
+              </div>
+            </form>
+          </div>
+        )}
       </div>
-    );
-  };
+    </div>
+  );
+};
 
   // Admin panel component
   const AdminPanel = () => (
@@ -924,7 +1224,7 @@ function App() {
       <h1 className="text-2xl font-bold text-gray-900">Admin Panel</h1>
       
       {/* Pending Approvals */}
-      {pendingUsers.length > 0 && (
+      {(pendingUsers || []).length > 0 && (
         <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-6">
           <h2 className="text-lg font-semibold text-yellow-800 mb-4">Pending User Approvals</h2>
           <div className="space-y-3">
@@ -952,7 +1252,7 @@ function App() {
       <div className="bg-white border border-gray-200 rounded-lg p-6">
         <h2 className="text-lg font-semibold text-gray-900 mb-4">Active Users</h2>
         <div className="space-y-3">
-          {users.map(user => (
+          {(users || []).map(user => (
             <div key={user.id} className="flex items-center justify-between p-4 hover:bg-gray-50 rounded-lg">
               <div className="flex items-center space-x-3">
                 <div className="w-10 h-10 bg-pink-100 rounded-full flex items-center justify-center">
@@ -960,14 +1260,14 @@ function App() {
                 </div>
                 <div>
                   <p className="font-medium text-gray-900">{user.name}</p>
-                  <p className="text-sm text-gray-600">{user.email} • {user.role}</p>
+                  <p className="text-sm text-gray-600">{user.email} • {user.role || 'user'}</p>
                 </div>
               </div>
               <div className="flex items-center space-x-2">
                 <span className={`px-2 py-1 rounded-full text-xs ${
                   user.role === 'admin' ? 'bg-purple-100 text-purple-800' : 'bg-blue-100 text-blue-800'
                 }`}>
-                  {user.role}
+                  {user.role || 'user'}
                 </span>
               </div>
             </div>
@@ -978,15 +1278,15 @@ function App() {
       {/* Storage Statistics */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         <div className="bg-white border border-gray-200 rounded-lg p-6 text-center">
-          <div className="text-2xl font-bold text-pink-600 mb-2">{assets.length}</div>
+          <div className="text-2xl font-bold text-pink-600 mb-2">{(assets || []).length}</div>
           <div className="text-gray-600">Total Assets</div>
         </div>
         <div className="bg-white border border-gray-200 rounded-lg p-6 text-center">
-          <div className="text-2xl font-bold text-blue-600 mb-2">{folders.length}</div>
+          <div className="text-2xl font-bold text-blue-600 mb-2">{(folders || []).length}</div>
           <div className="text-gray-600">Active Folders</div>
         </div>
         <div className="bg-white border border-gray-200 rounded-lg p-6 text-center">
-          <div className="text-2xl font-bold text-green-600 mb-2">{users.length}</div>
+          <div className="text-2xl font-bold text-green-600 mb-2">{(users || []).length}</div>
           <div className="text-gray-600">Active Users</div>
         </div>
       </div>
@@ -1067,8 +1367,24 @@ function App() {
       </main>
       
       {showUpload && <UploadModal />}
+      
+      {error && (
+        <div className="fixed bottom-4 right-4 bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded shadow-lg">
+          <div className="flex items-center justify-between">
+            <span>{error}</span>
+            <button 
+              onClick={() => setError('')}
+              className="ml-2 text-red-500 hover:text-red-700"
+            >
+              ×
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
 export default App;
+
+

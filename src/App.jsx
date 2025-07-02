@@ -963,100 +963,274 @@ function App() {
     );
   };
 
-  // Upload modal component
-  const UploadModal = () => {
-    const [uploadFiles, setUploadFiles] = useState([]);
-    const [uploadTags, setUploadTags] = useState('');
-    const [uploading, setUploading] = useState(false);
+// Replace your UploadModal component with this:
+const UploadModal = () => {
+  const [uploadFiles, setUploadFiles] = useState([]);
+  const [uploadTags, setUploadTags] = useState('');
+  const [uploading, setUploading] = useState(false);
+  const [currentStep, setCurrentStep] = useState(1);
+  const [selectedFolderId, setSelectedFolderId] = useState(null);
+  const [selectedFolderName, setSelectedFolderName] = useState('');
+  const [showCreateFolder, setShowCreateFolder] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
+  const [newFolderTags, setNewFolderTags] = useState('');
+  const [creatingFolder, setCreatingFolder] = useState(false);
 
-    const handleUpload = async (e) => {
-      e.preventDefault();
-      if (uploadFiles.length === 0) return;
+  const handleCreateFolder = async (e) => {
+    e.preventDefault();
+    if (!newFolderName.trim()) return;
 
-      setUploading(true);
-      try {
-        for (const file of uploadFiles) {
-          await uploadFile(file, selectedFolder?.id, uploadTags);
-        }
-        setShowUpload(false);
-        setUploadFiles([]);
-        setUploadTags('');
-      } catch (error) {
-        console.error('Upload failed:', error);
-        setError('Upload failed: ' + error.message);
-      } finally {
-        setUploading(false);
+    setCreatingFolder(true);
+    try {
+      const newFolder = await createFolder(newFolderName, 'media', newFolderTags);
+      setSelectedFolderId(newFolder.id);
+      setSelectedFolderName(newFolder.name);
+      setShowCreateFolder(false);
+      setNewFolderName('');
+      setNewFolderTags('');
+      setCurrentStep(2);
+    } catch (error) {
+      console.error('Failed to create folder:', error);
+      setError('Failed to create folder: ' + error.message);
+    } finally {
+      setCreatingFolder(false);
+    }
+  };
+
+  const handleFolderSelect = (folder) => {
+    setSelectedFolderId(folder.id);
+    setSelectedFolderName(folder.name);
+    setCurrentStep(2);
+  };
+
+  const handleUpload = async (e) => {
+    e.preventDefault();
+    if (uploadFiles.length === 0 || !selectedFolderId) return;
+
+    setUploading(true);
+    try {
+      for (const file of uploadFiles) {
+        await uploadFile(file, selectedFolderId, uploadTags);
       }
-    };
+      // Reset and close
+      setShowUpload(false);
+      setUploadFiles([]);
+      setUploadTags('');
+      setCurrentStep(1);
+      setSelectedFolderId(null);
+      setSelectedFolderName('');
+    } catch (error) {
+      console.error('Upload failed:', error);
+      setError('Upload failed: ' + error.message);
+    } finally {
+      setUploading(false);
+    }
+  };
 
-    return (
-      <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-        <div className="bg-white rounded-xl max-w-lg w-full max-h-[90vh] overflow-y-auto">
-          <div className="p-6 border-b border-gray-200">
-            <div className="flex items-center justify-between">
+  const goBackToStep1 = () => {
+    setCurrentStep(1);
+    setSelectedFolderId(null);
+    setSelectedFolderName('');
+  };
+
+  const closeModal = () => {
+    setShowUpload(false);
+    setUploadFiles([]);
+    setUploadTags('');
+    setCurrentStep(1);
+    setSelectedFolderId(null);
+    setSelectedFolderName('');
+    setShowCreateFolder(false);
+    setNewFolderName('');
+    setNewFolderTags('');
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+      <div className="bg-white rounded-xl max-w-lg w-full max-h-[90vh] overflow-y-auto">
+        <div className="p-6 border-b border-gray-200">
+          <div className="flex items-center justify-between">
+            <div>
               <h2 className="text-lg font-semibold text-gray-900">Upload Assets</h2>
-              <button onClick={() => setShowUpload(false)} className="text-gray-400 hover:text-gray-600">
-                <X className="h-5 w-5" />
-              </button>
+              <p className="text-sm text-gray-500">
+                Step {currentStep} of 2: {currentStep === 1 ? 'Choose Folder' : 'Upload Files'}
+              </p>
+            </div>
+            <button onClick={closeModal} className="text-gray-400 hover:text-gray-600">
+              <X className="h-5 w-5" />
+            </button>
+          </div>
+        </div>
+
+        {/* Step 1: Choose/Create Folder */}
+        {currentStep === 1 && (
+          <div className="p-6 space-y-4">
+            <div>
+              <h3 className="text-md font-medium text-gray-900 mb-4">Select a folder for your assets</h3>
+              
+              {/* Existing Folders */}
+              {folders.length > 0 && (
+                <div className="space-y-2 mb-4">
+                  <h4 className="text-sm font-medium text-gray-700">Choose existing folder:</h4>
+                  <div className="max-h-48 overflow-y-auto space-y-1">
+                    {folders.map(folder => (
+                      <button
+                        key={folder.id}
+                        onClick={() => handleFolderSelect(folder)}
+                        className="w-full text-left p-3 border border-gray-200 rounded-lg hover:bg-gray-50 hover:border-gray-300 transition-colors"
+                      >
+                        <div className="flex items-center space-x-3">
+                          <Folder className="h-5 w-5 text-blue-600" />
+                          <div>
+                            <p className="font-medium text-gray-900">{folder.name}</p>
+                            {folder.tags && folder.tags.length > 0 && (
+                              <p className="text-xs text-gray-500">
+                                Tags: {folder.tags.join(', ')}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Divider */}
+              {folders.length > 0 && (
+                <div className="flex items-center my-4">
+                  <div className="flex-1 border-t border-gray-200"></div>
+                  <span className="px-3 text-sm text-gray-500">or</span>
+                  <div className="flex-1 border-t border-gray-200"></div>
+                </div>
+              )}
+
+              {/* Create New Folder */}
+              {!showCreateFolder ? (
+                <button
+                  onClick={() => setShowCreateFolder(true)}
+                  className="w-full flex items-center justify-center space-x-2 p-3 border-2 border-dashed border-gray-300 rounded-lg hover:border-gray-400 transition-colors"
+                >
+                  <Plus className="h-5 w-5 text-gray-400" />
+                  <span className="text-gray-600">Create new folder</span>
+                </button>
+              ) : (
+                <form onSubmit={handleCreateFolder} className="space-y-3 p-4 border border-gray-200 rounded-lg bg-gray-50">
+                  <h4 className="text-sm font-medium text-gray-700">Create new folder:</h4>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">Folder Name</label>
+                    <input
+                      type="text"
+                      value={newFolderName}
+                      onChange={(e) => setNewFolderName(e.target.value)}
+                      placeholder="e.g. Q4 Campaign, Team Photos"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:border-pink-500"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">Tags (optional)</label>
+                    <input
+                      type="text"
+                      value={newFolderTags}
+                      onChange={(e) => setNewFolderTags(e.target.value)}
+                      placeholder="marketing, social, campaign"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:border-pink-500"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">Separate tags with commas</p>
+                  </div>
+                  <div className="flex space-x-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowCreateFolder(false);
+                        setNewFolderName('');
+                        setNewFolderTags('');
+                      }}
+                      className="flex-1 px-3 py-2 border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50 transition-colors"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={creatingFolder || !newFolderName.trim()}
+                      className="flex-1 bg-gradient-to-r from-pink-500 to-pink-400 text-white px-3 py-2 rounded-md hover:from-pink-600 hover:to-pink-500 transition-colors disabled:opacity-50"
+                    >
+                      {creatingFolder ? 'Creating...' : 'Create & Continue'}
+                    </button>
+                  </div>
+                </form>
+              )}
             </div>
           </div>
-          
-          <form onSubmit={handleUpload} className="p-6 space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">Select Files</label>
-              <input
-                type="file"
-                multiple
-                accept="image/*,video/*"
-                onChange={(e) => setUploadFiles(Array.from(e.target.files || []))}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:border-pink-500"
-                required
-              />
-              <p className="text-xs text-gray-500 mt-1">Select images or videos to upload</p>
-            </div>
-            
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">Tags</label>
-              <input
-                type="text"
-                value={uploadTags}
-                onChange={(e) => setUploadTags(e.target.value)}
-                placeholder="customer, interview, testimonial"
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:border-pink-500"
-              />
-              <p className="text-xs text-gray-500 mt-1">Separate tags with commas</p>
-            </div>
-            
-            {selectedFolder && (
-              <div className="bg-blue-50 p-3 rounded-lg">
-                <p className="text-sm text-blue-800">
-                  Files will be uploaded to: <span className="font-medium">{selectedFolder.name}</span>
-                </p>
+        )}
+
+        {/* Step 2: Upload Files */}
+        {currentStep === 2 && (
+          <div className="p-6 space-y-4">
+            <div className="flex items-center space-x-2 mb-4">
+              <button
+                onClick={goBackToStep1}
+                className="p-1 text-gray-400 hover:text-gray-600"
+              >
+                <ArrowLeft className="h-4 w-4" />
+              </button>
+              <div>
+                <h3 className="text-md font-medium text-gray-900">Upload to: {selectedFolderName}</h3>
+                <p className="text-sm text-gray-500">Choose files and add tags</p>
               </div>
-            )}
-            
-            <div className="flex space-x-3 pt-4">
-              <button
-                type="button"
-                onClick={() => setShowUpload(false)}
-                className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
-                disabled={uploading}
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                disabled={uploading || uploadFiles.length === 0}
-                className="flex-1 bg-gradient-to-r from-pink-500 to-pink-400 text-white px-4 py-2 rounded-lg hover:from-pink-600 hover:to-pink-500 transition-colors disabled:opacity-50"
-              >
-                {uploading ? 'Uploading...' : 'Upload'}
-              </button>
             </div>
-          </form>
-        </div>
+
+            <form onSubmit={handleUpload} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Select Files</label>
+                <input
+                  type="file"
+                  multiple
+                  accept="image/*,video/*"
+                  onChange={(e) => setUploadFiles(Array.from(e.target.files || []))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:border-pink-500"
+                  required
+                />
+                <p className="text-xs text-gray-500 mt-1">Select images or videos to upload</p>
+              </div>
+              
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Tags</label>
+                <input
+                  type="text"
+                  value={uploadTags}
+                  onChange={(e) => setUploadTags(e.target.value)}
+                  placeholder="customer, interview, testimonial"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:border-pink-500"
+                />
+                <p className="text-xs text-gray-500 mt-1">Separate tags with commas</p>
+              </div>
+              
+              <div className="flex space-x-3 pt-4">
+                <button
+                  type="button"
+                  onClick={goBackToStep1}
+                  className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
+                  disabled={uploading}
+                >
+                  Back
+                </button>
+                <button
+                  type="submit"
+                  disabled={uploading || uploadFiles.length === 0}
+                  className="flex-1 bg-gradient-to-r from-pink-500 to-pink-400 text-white px-4 py-2 rounded-lg hover:from-pink-600 hover:to-pink-500 transition-colors disabled:opacity-50"
+                >
+                  {uploading ? 'Uploading...' : 'Upload'}
+                </button>
+              </div>
+            </form>
+          </div>
+        )}
       </div>
-    );
-  };
+    </div>
+  );
+};
 
   // Admin panel component
   const AdminPanel = () => (

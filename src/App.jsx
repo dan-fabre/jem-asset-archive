@@ -139,49 +139,35 @@ function App() {
     };
   }, []);
 
-  // Bulletproof profile loading with fallbacks
-  const getProfileSafe = async (userId) => {
-    try {
-      console.log('👤 Getting profile for user:', userId);
-      
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', userId)
-        .single();
+const getProfile = async (userId) => {
+  try {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('id', userId)
+      .single();
 
-      if (error) {
-        console.error('❌ Profile fetch error:', error);
-        // Don't throw - handle gracefully
-        return handleProfileFallback(userId);
-      }
+    if (error) throw error;
 
-      if (data) {
-        console.log('✅ Profile found:', data);
-        
-        if (data.status === 'active') {
-          setCurrentUser(data);
-          setCurrentView('dashboard');
-          
-          // Load data in background - don't let these block the UI
-          setTimeout(() => {
-            loadDataSafely();
-          }, 100);
-          
-        } else if (data.status === 'pending') {
-          setCurrentView('pending');
-        } else {
-          setCurrentView('login');
-        }
-      } else {
-        console.log('❌ No profile data returned');
-        return handleProfileFallback(userId);
-      }
-    } catch (error) {
-      console.error('💥 Error in getProfileSafe:', error);
-      return handleProfileFallback(userId);
+    if (data && data.status === 'active') {
+      setCurrentUser(data);
+      setCurrentView('dashboard');
+      // loadFolders();
+      // loadAssets();
+      // if (data.role === 'admin') {
+      //   loadUsers();
+      // }
+    } else if (data && data.status === 'pending') {
+      setCurrentView('pending');
     }
-  };
+  } catch (error) {
+    console.error('Error loading profile:', error);
+    setError('Error loading profile');
+  }
+  
+  // ADD THIS LINE:
+  setLoading(false);
+};
 
   // Fallback when profile loading fails
   const handleProfileFallback = async (userId) => {

@@ -161,7 +161,7 @@ function App() {
         
         if (data.status === 'active') {
           setCurrentUser(data);
-          setCurrentView('media');
+          setCurrentView('dashboard');
           
           // Load data in background - don't let these block the UI
           setTimeout(() => {
@@ -197,7 +197,7 @@ function App() {
           role: 'user',
           status: 'active'
         });
-        setCurrentView('media');
+        setCurrentView('dashboard');
         
         // Try to load data in background
         setTimeout(() => {
@@ -423,7 +423,7 @@ function App() {
   };
 
   const goHome = () => {
-    setCurrentView('media');
+    setCurrentView('dashboard');
     setSelectedFolder(null);
     setNavigationStack([]);
     setShowMobileMenu(false);

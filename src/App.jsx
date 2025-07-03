@@ -152,18 +152,14 @@ const getProfile = async (userId) => {
     if (data && data.status === 'active') {
       setCurrentUser(data);
       setCurrentView('dashboard');
-      // loadFolders();
-      // loadAssets();
-      // if (data.role === 'admin') {
-      //   loadUsers();
-      // }
+      loadFolders();
+      loadAssets();
+      if (data.role === 'admin') {
+        loadUsers();
+      }
     } else if (data && data.status === 'pending') {
       setCurrentView('pending');
     }
-  } catch (error) {
-    console.error('Error loading profile:', error);
-    setError('Error loading profile');
-  }
   
   // ADD THIS LINE:
   setLoading(false);

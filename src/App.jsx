@@ -163,6 +163,7 @@ const getProfile = async (userId) => {
   } catch (error) {
     console.error('Error loading profile:', error);
     setError('Error loading profile');
+    setLoading(false);  
   }
 };
   

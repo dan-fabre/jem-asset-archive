@@ -166,10 +166,6 @@ const getProfile = async (userId) => {
     setLoading(false);  
   }
 };
-  
-  // ADD THIS LINE:
-  setLoading(false);
-};
 
   // Fallback when profile loading fails
   const handleProfileFallback = async (userId) => {

@@ -23,202 +23,98 @@ function App() {
   const [error, setError] = useState('');
   const [authInitialized, setAuthInitialized] = useState(false);
 
-  // Enhanced authentication with bulletproof error handling
+// Check if user is logged in on mount
   useEffect(() => {
-    let isMounted = true;
-    let authTimeout;
-
-    const safeSetState = (setter, value) => {
-      if (isMounted) {
-        try {
-          setter(value);
-        } catch (error) {
-          console.error('State update error:', error);
-        }
-      }
-    };
-
-    const getInitialSession = async () => {
+    const initializeAuth = async () => {
       try {
-        console.log('🔄 Getting initial session...');
-        
+        // Get initial session
         const { data: { session }, error } = await supabase.auth.getSession();
         
-        if (authTimeout) {
-          clearTimeout(authTimeout);
-          authTimeout = null;
-        }
-        
         if (error) {
-          console.error('❌ Error getting session:', error);
-          if (isMounted) {
-            safeSetState(setCurrentView, 'login');
-            safeSetState(setLoading, false);
-            safeSetState(setAuthInitialized, true);
-          }
+          console.error('Error getting session:', error);
+          setCurrentView('login');
+          setLoading(false);
           return;
         }
 
-        if (session?.user && isMounted) {
-          console.log('✅ Session found for:', session.user.email);
-          try {
-            await getProfileSafe(session.user.id);
-          } catch (profileError) {
-            console.error('⚠️ Profile loading failed, using basic user data:', profileError);
-            // Fallback: set basic user data and go to dashboard
-            safeSetState(setCurrentUser, {
-              id: session.user.id,
-              email: session.user.email,
-              name: session.user.user_metadata?.name || session.user.email.split('@')[0],
-              role: 'user'
-            });
-            safeSetState(setCurrentView, 'dashboard');
-          }
-        } else if (isMounted) {
-          console.log('❌ No session found');
-          safeSetState(setCurrentView, 'login');
-        }
-        
-        if (isMounted) {
-          safeSetState(setLoading, false);
-          safeSetState(setAuthInitialized, true);
+        if (session?.user) {
+          console.log('Initial session found:', session.user.email);
+          await getProfile(session.user.id);
+        } else {
+          console.log('No initial session found');
+          setCurrentView('login');
+          setLoading(false);
         }
       } catch (error) {
-        console.error('💥 Session check failed:', error);
-        if (isMounted) {
-          safeSetState(setCurrentView, 'login');
-          safeSetState(setLoading, false);
-          safeSetState(setAuthInitialized, true);
-        }
+        console.error('Session initialization failed:', error);
+        setCurrentView('login');
+        setLoading(false);
       }
     };
 
+    initializeAuth();
+
+    // Listen for auth changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, session) => {
-        console.log('🔄 Auth state changed:', event, session?.user?.email);
+        console.log('Auth state changed:', event, session?.user?.email);
         
-        if (!isMounted) return;
-
         if (session?.user) {
-          try {
-            await getProfileSafe(session.user.id);
-          } catch (error) {
-            console.error('⚠️ Profile loading failed in auth change:', error);
-            // Fallback: set basic user data
-            safeSetState(setCurrentUser, {
-              id: session.user.id,
-              email: session.user.email,
-              name: session.user.user_metadata?.name || session.user.email.split('@')[0],
-              role: 'user'
-            });
-            safeSetState(setCurrentView, 'dashboard');
-          }
+          await getProfile(session.user.id);
         } else {
-          console.log('🚪 User signed out');
-          safeSetState(setCurrentUser, null);
-          safeSetState(setCurrentView, 'login');
-          safeSetState(setFolders, []);
-          safeSetState(setAssets, []);
-          safeSetState(setUsers, []);
-          safeSetState(setPendingUsers, []);
+          setCurrentUser(null);
+          setCurrentView('login');
+          setFolders([]);
+          setAssets([]);
+          setUsers([]);
+          setPendingUsers([]);
+          setLoading(false);
         }
-        
-        safeSetState(setLoading, false);
-        safeSetState(setAuthInitialized, true);
       }
     );
 
-    getInitialSession();
-
-    return () => {
-      isMounted = false;
-      if (authTimeout) {
-        clearTimeout(authTimeout);
-      }
-      subscription.unsubscribe();
-    };
+    return () => subscription.unsubscribe();
   }, []);
 
-const getProfile = async (userId) => {
-  try {
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', userId)
-      .single();
-
-    if (error) throw error;
-
-    if (data && data.status === 'active') {
-      setCurrentUser(data);
-      setCurrentView('dashboard');
-      loadFolders();
-      loadAssets();
-      if (data.role === 'admin') {
-        loadUsers();
-      }
-    } else if (data && data.status === 'pending') {
-      setCurrentView('pending');
-    }
-  } catch (error) {
-    console.error('Error loading profile:', error);
-    setError('Error loading profile');
-    setLoading(false);  
-  }
-};
-
-  // Fallback when profile loading fails
-  const handleProfileFallback = async (userId) => {
-    console.log('🔄 Using profile fallback for user:', userId);
+  const getProfile = async (userId) => {
     try {
-      // Get basic user info from auth
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user) {
-        setCurrentUser({
-          id: user.id,
-          email: user.email,
-          name: user.user_metadata?.name || user.email.split('@')[0],
-          role: 'user',
-          status: 'active'
-        });
+      console.log('Getting profile for user:', userId);
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', userId)
+        .single();
+
+      if (error) {
+        console.error('Profile fetch error:', error);
+        throw error;
+      }
+
+      console.log('Profile data:', data);
+
+      if (data && data.status === 'active') {
+        setCurrentUser(data);
         setCurrentView('dashboard');
         
-        // Try to load data in background
-        setTimeout(() => {
-          loadDataSafely();
-        }, 100);
-      } else {
-        setCurrentView('login');
+        // Load folders and assets immediately after successful profile load
+        console.log('Loading folders and assets...');
+        await loadFolders();
+        await loadAssets();
+        
+        // Load users if admin
+        if (data.role === 'admin') {
+          await loadUsers();
+        }
+        
+        setLoading(false);
+      } else if (data && data.status === 'pending') {
+        setCurrentView('pending');
+        setLoading(false);
       }
     } catch (error) {
-      console.error('💥 Fallback failed:', error);
-      setCurrentView('login');
-    }
-  };
-
-  // Safe data loading that won't break the app
-  const loadDataSafely = async () => {
-    console.log('📊 Loading app data safely...');
-    
-    // Load each data type independently with error handling
-    try {
-      await loadFoldersSafe();
-    } catch (error) {
-      console.error('📁 Folder loading failed:', error);
-    }
-    
-    try {
-      await loadAssetsSafe();
-    } catch (error) {
-      console.error('🖼️ Asset loading failed:', error);
-    }
-    
-    try {
-      if (currentUser?.role === 'admin') {
-        await loadUsersSafe();
-      }
-    } catch (error) {
-      console.error('👥 User loading failed:', error);
+      console.error('Error loading profile:', error);
+      setError('Error loading profile');
+      setLoading(false);
     }
   };
 
